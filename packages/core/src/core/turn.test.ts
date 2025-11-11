@@ -13,7 +13,8 @@ import { Turn, GeminiEventType } from './turn.js';
 import type { GenerateContentResponse, Part, Content } from '@google/genai';
 import { reportError } from '../utils/errorReporting.js';
 import type { GeminiChat } from './geminiChat.js';
-import { InvalidStreamError, StreamEventType } from './geminiChat.js';
+import { StreamEventType } from './geminiChat.js';
+import { InvalidStreamError } from './invalidStreamError.js';
 
 const mockSendMessageStream = vi.fn();
 const mockGetHistory = vi.fn();
@@ -240,7 +241,12 @@ describe('Turn', () => {
         events.push(event);
       }
 
-      expect(events).toEqual([{ type: GeminiEventType.InvalidStream }]);
+      expect(events).toEqual([
+        {
+          type: GeminiEventType.InvalidStream,
+          value: expect.objectContaining({ type: 'NO_FINISH_REASON' }),
+        },
+      ]);
       expect(turn.getDebugResponses().length).toBe(0);
       expect(reportError).not.toHaveBeenCalled(); // Should not report as error
     });
@@ -760,7 +766,16 @@ describe('Turn', () => {
 
     it('should yield a Retry event when it receives one from the chat stream', async () => {
       const mockResponseStream = (async function* () {
-        yield { type: StreamEventType.RETRY };
+        yield {
+          type: StreamEventType.RETRY,
+          value: {
+            attempt: 0,
+            maxAttempts: 2,
+            delayMs: 500,
+            errorType: 'NO_RESPONSE_TEXT',
+            errorCategory: 'MALFORMED_CONTENT',
+          },
+        };
         yield {
           type: StreamEventType.CHUNK,
           value: {
@@ -780,7 +795,13 @@ describe('Turn', () => {
       }
 
       expect(events).toEqual([
-        { type: GeminiEventType.Retry },
+        {
+          type: GeminiEventType.Retry,
+          value: expect.objectContaining({
+            errorType: 'NO_RESPONSE_TEXT',
+            errorCategory: 'MALFORMED_CONTENT',
+          }),
+        },
         { type: GeminiEventType.Content, value: 'Success' },
       ]);
     });

@@ -14,6 +14,8 @@ import type {
   SendMessageParameters,
   Part,
   Tool,
+  GenerateContentResponsePromptFeedback,
+  Candidate,
 } from '@google/genai';
 import { toParts } from '../code_assist/converter.js';
 import { createUserContent } from '@google/genai';
@@ -26,21 +28,20 @@ import {
 import { hasCycleInSchema } from '../tools/tools.js';
 import type { StructuredError } from './turn.js';
 import type { CompletedToolCall } from './coreToolScheduler.js';
-import {
-  logContentRetry,
-  logContentRetryFailure,
-} from '../telemetry/loggers.js';
-import {
-  ChatRecordingService,
-  type ResumedSessionData,
-} from '../services/chatRecordingService.js';
-import {
-  ContentRetryEvent,
-  ContentRetryFailureEvent,
-} from '../telemetry/types.js';
+import { ChatRecordingService, type ResumedSessionData } from '../services/chatRecordingService.js';
 import { handleFallback } from '../fallback/handler.js';
 import { isFunctionResponse } from '../utils/messageInspectors.js';
 import { partListUnionToString } from './geminiRequest.js';
+import {
+  InvalidStreamError,
+  type InvalidStreamErrorContext,
+} from './invalidStreamError.js';
+import {
+  RetryController,
+  type RetryControllerYield,
+  type RetryEventPayload,
+  type RetryControllerOptions,
+} from './retryController.js';
 
 export enum StreamEventType {
   /** A regular content chunk from the API. */
@@ -52,19 +53,9 @@ export enum StreamEventType {
 
 export type StreamEvent =
   | { type: StreamEventType.CHUNK; value: GenerateContentResponse }
-  | { type: StreamEventType.RETRY };
+  | { type: StreamEventType.RETRY; value: RetryEventPayload };
 
-/**
- * Options for retrying due to invalid content from the model.
- */
-interface ContentRetryOptions {
-  /** Total number of attempts to make (1 initial + N retries). */
-  maxAttempts: number;
-  /** The base delay in milliseconds for linear backoff. */
-  initialDelayMs: number;
-}
-
-const INVALID_CONTENT_RETRY_OPTIONS: ContentRetryOptions = {
+const INVALID_CONTENT_RETRY_OPTIONS: RetryControllerOptions = {
   maxAttempts: 2, // 1 initial call + 1 retry
   initialDelayMs: 500,
 };
@@ -163,20 +154,6 @@ function extractCuratedHistory(comprehensiveHistory: Content[]): Content[] {
 }
 
 /**
- * Custom error to signal that a stream completed with invalid content,
- * which should trigger a retry.
- */
-export class InvalidStreamError extends Error {
-  readonly type: 'NO_FINISH_REASON' | 'NO_RESPONSE_TEXT';
-
-  constructor(message: string, type: 'NO_FINISH_REASON' | 'NO_RESPONSE_TEXT') {
-    super(message);
-    this.name = 'InvalidStreamError';
-    this.type = type;
-  }
-}
-
-/**
  * Chat session that enables sending messages to the model with previous
  * conversation context.
  *
@@ -265,84 +242,38 @@ export class GeminiChat {
 
     // eslint-disable-next-line @typescript-eslint/no-this-alias
     const self = this;
+    const retryController = new RetryController(
+      this.config,
+      model,
+      prompt_id,
+      INVALID_CONTENT_RETRY_OPTIONS,
+    );
+
     return (async function* () {
       try {
-        let lastError: unknown = new Error('Request failed after all retries.');
-
-        for (
-          let attempt = 0;
-          attempt < INVALID_CONTENT_RETRY_OPTIONS.maxAttempts;
-          attempt++
-        ) {
-          try {
-            if (attempt > 0) {
-              yield { type: StreamEventType.RETRY };
-            }
-
-            // If this is a retry, set temperature to 1 to encourage different output.
-            const currentParams = { ...params };
-            if (attempt > 0) {
-              currentParams.config = {
-                ...currentParams.config,
-                temperature: 1,
-              };
-            }
-
-            const stream = await self.makeApiCallAndProcessStream(
-              model,
-              requestContents,
-              currentParams,
-              prompt_id,
-            );
-
-            for await (const chunk of stream) {
-              yield { type: StreamEventType.CHUNK, value: chunk };
-            }
-
-            lastError = null;
-            break;
-          } catch (error) {
-            lastError = error;
-            const isContentError = error instanceof InvalidStreamError;
-
-            if (isContentError) {
-              // Check if we have more attempts left.
-              if (attempt < INVALID_CONTENT_RETRY_OPTIONS.maxAttempts - 1) {
-                logContentRetry(
-                  self.config,
-                  new ContentRetryEvent(
-                    attempt,
-                    (error as InvalidStreamError).type,
-                    INVALID_CONTENT_RETRY_OPTIONS.initialDelayMs,
-                    model,
-                  ),
-                );
-                await new Promise((res) =>
-                  setTimeout(
-                    res,
-                    INVALID_CONTENT_RETRY_OPTIONS.initialDelayMs *
-                      (attempt + 1),
-                  ),
-                );
-                continue;
-              }
-            }
-            break;
+        const retryStream = retryController.run(async (attempt) => {
+          const currentParams = { ...params };
+          if (attempt > 0) {
+            currentParams.config = {
+              ...currentParams.config,
+              temperature: 1,
+            };
           }
-        }
 
-        if (lastError) {
-          if (lastError instanceof InvalidStreamError) {
-            logContentRetryFailure(
-              self.config,
-              new ContentRetryFailureEvent(
-                INVALID_CONTENT_RETRY_OPTIONS.maxAttempts,
-                (lastError as InvalidStreamError).type,
-                model,
-              ),
-            );
+          return self.makeApiCallAndProcessStream(
+            model,
+            requestContents,
+            currentParams,
+            prompt_id,
+          );
+        });
+
+        for await (const item of retryStream) {
+          if (item.kind === 'chunk') {
+            yield { type: StreamEventType.CHUNK, value: item.value };
+          } else {
+            yield { type: StreamEventType.RETRY, value: item.value };
           }
-          throw lastError;
         }
       } finally {
         streamDoneResolver!();
@@ -503,12 +434,38 @@ export class GeminiChat {
 
     let hasToolCall = false;
     let hasFinishReason = false;
+    let lastFinishReason: string | undefined;
+    let safetyBlocked = false;
+    let lastPromptFeedback: GenerateContentResponsePromptFeedback | undefined;
+    let lastSafetyRatings: Candidate['safetyRatings'] | undefined;
 
     for await (const chunk of streamResponse) {
-      hasFinishReason =
-        chunk?.candidates?.some((candidate) => candidate.finishReason) ?? false;
+      const candidate = chunk.candidates?.[0];
+      if (candidate?.finishReason) {
+        hasFinishReason = true;
+        lastFinishReason = candidate.finishReason;
+        if (candidate.finishReason === 'SAFETY') {
+          safetyBlocked = true;
+        }
+      }
+      if (candidate?.safetyRatings && candidate.safetyRatings.length > 0) {
+        lastSafetyRatings = candidate.safetyRatings;
+        safetyBlocked = true;
+      }
+
+      if (chunk.promptFeedback) {
+        lastPromptFeedback = chunk.promptFeedback;
+        const blockReason = chunk.promptFeedback.blockReason;
+        if (blockReason && blockReason !== 'BLOCK_REASON_UNSPECIFIED') {
+          safetyBlocked = true;
+          if (!lastFinishReason && blockReason === 'SAFETY') {
+            lastFinishReason = 'SAFETY';
+          }
+        }
+      }
+
       if (isValidResponse(chunk)) {
-        const content = chunk.candidates?.[0]?.content;
+        const content = candidate?.content;
         if (content?.parts) {
           if (content.parts.some((part) => part.thought)) {
             // Record thoughts
@@ -556,6 +513,28 @@ export class GeminiChat {
       .join('')
       .trim();
 
+    // Ensure safety signals are carried forward even if no valid response parts were captured.
+    if (!safetyBlocked) {
+      const promptBlocked =
+        lastPromptFeedback?.blockReason &&
+        lastPromptFeedback.blockReason !== 'BLOCK_REASON_UNSPECIFIED';
+      const hasSafetyRatings =
+        Array.isArray(lastSafetyRatings) && lastSafetyRatings.length > 0;
+
+      if (lastFinishReason === 'SAFETY' || promptBlocked || hasSafetyRatings) {
+        safetyBlocked = true;
+        if (!lastFinishReason && promptBlocked) {
+          lastFinishReason =
+            lastPromptFeedback?.blockReason === 'SAFETY'
+              ? 'SAFETY'
+              : lastPromptFeedback?.blockReason;
+        }
+        if (!lastFinishReason && hasSafetyRatings) {
+          lastFinishReason = 'SAFETY';
+        }
+      }
+    }
+
     // Record model response text from the collected parts
     if (responseText) {
       this.chatRecordingService.recordMessage({
@@ -573,17 +552,53 @@ export class GeminiChat {
     // - No finish reason, OR
     // - Empty response text (e.g., only thoughts with no actual content)
     if (!hasToolCall && (!hasFinishReason || !responseText)) {
+      const context: InvalidStreamErrorContext = {
+        partialResponseParts: consolidatedParts.length
+          ? structuredClone(consolidatedParts)
+          : undefined,
+        finishReason: lastFinishReason,
+        promptFeedback: lastPromptFeedback
+          ? structuredClone(lastPromptFeedback)
+          : undefined,
+        safetyRatings: lastSafetyRatings
+          ? structuredClone(lastSafetyRatings)
+          : undefined,
+      };
+
+      const derivedSafetyBlocked =
+        safetyBlocked ||
+        context.finishReason === 'SAFETY' ||
+        (context.promptFeedback?.blockReason &&
+          context.promptFeedback.blockReason !==
+            'BLOCK_REASON_UNSPECIFIED') ||
+        (context.safetyRatings?.length ?? 0) > 0;
+
+      if (derivedSafetyBlocked) {
+        const derivedContext: InvalidStreamErrorContext = {
+          ...context,
+          finishReason: context.finishReason ?? 'SAFETY',
+        };
+
+        throw new InvalidStreamError(
+          'Model response was blocked by safety systems.',
+          'SAFETY_BLOCKED',
+          derivedContext,
+        );
+      }
+
       if (!hasFinishReason) {
         throw new InvalidStreamError(
           'Model stream ended without a finish reason.',
           'NO_FINISH_REASON',
-        );
-      } else {
-        throw new InvalidStreamError(
-          'Model stream ended with empty response text.',
-          'NO_RESPONSE_TEXT',
+          context,
         );
       }
+
+      throw new InvalidStreamError(
+        'Model stream ended with empty response text.',
+        'NO_RESPONSE_TEXT',
+        context,
+      );
     }
 
     this.history.push({ role: 'model', parts: consolidatedParts });

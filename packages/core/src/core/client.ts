@@ -126,10 +126,103 @@ export class GeminiClient {
     return yield* this.lifecycle.sendMessageStream(
       request,
       signal,
-      promptId,
-      turns,
-      isInvalidStreamRetry,
-    );
+    };
+
+    let modelToUse: string;
+
+    // Determine Model (Stickiness vs. Routing)
+    if (this.currentSequenceModel) {
+      modelToUse = this.currentSequenceModel;
+    } else {
+      const router = await this.config.getModelRouterService();
+      const decision = await router.route(routingContext);
+      modelToUse = decision.model;
+      // Lock the model for the rest of the sequence
+      this.currentSequenceModel = modelToUse;
+    }
+
+    const resultStream = turn.run(modelToUse, request, linkedSignal);
+    for await (const event of resultStream) {
+      if (this.loopDetector.addAndCheck(event)) {
+        yield { type: GeminiEventType.LoopDetected };
+        controller.abort();
+        return turn;
+      }
+      yield event;
+
+      this.updateTelemetryTokenCount();
+
+      if (event.type === GeminiEventType.InvalidStream) {
+        const invalidCategory = event.value?.category;
+        if (
+          this.config.getContinueOnFailedApiCall() &&
+          invalidCategory !== 'SAFETY_BLOCK'
+        ) {
+          if (isInvalidStreamRetry) {
+            // We already retried once, so stop here.
+            logContentRetryFailure(
+              this.config,
+              new ContentRetryFailureEvent(
+                4, // 2 initial + 2 after injections
+                'FAILED_AFTER_PROMPT_INJECTION',
+                modelToUse,
+              ),
+            );
+            return turn;
+          }
+          const nextRequest = [{ text: 'System: Please continue.' }];
+          yield* this.sendMessageStream(
+            nextRequest,
+            signal,
+            prompt_id,
+            boundedTurns - 1,
+            true, // Set isInvalidStreamRetry to true
+          );
+          return turn;
+        }
+      }
+      if (event.type === GeminiEventType.Error) {
+        return turn;
+      }
+    }
+    if (!turn.pendingToolCalls.length && signal && !signal.aborted) {
+      // Check if next speaker check is needed
+      if (this.config.getQuotaErrorOccurred()) {
+        return turn;
+      }
+
+      if (this.config.getSkipNextSpeakerCheck()) {
+        return turn;
+      }
+
+      const nextSpeakerCheck = await checkNextSpeaker(
+        this.getChat(),
+        this.config.getBaseLlmClient(),
+        signal,
+        prompt_id,
+      );
+      logNextSpeakerCheck(
+        this.config,
+        new NextSpeakerCheckEvent(
+          prompt_id,
+          turn.finishReason?.toString() || '',
+          nextSpeakerCheck?.next_speaker || '',
+        ),
+      );
+      if (nextSpeakerCheck?.next_speaker === 'model') {
+        const nextRequest = [{ text: 'Please continue.' }];
+        // This recursive call's events will be yielded out, but the final
+        // turn object will be from the top-level call.
+        yield* this.sendMessageStream(
+          nextRequest,
+          signal,
+          prompt_id,
+          boundedTurns - 1,
+          // isInvalidStreamRetry is false here, as this is a next speaker check
+        );
+      }
+    }
+    return turn;
   }
 
   async generateContent(

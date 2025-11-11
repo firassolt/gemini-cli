@@ -1426,7 +1426,13 @@ ${JSON.stringify(
       );
       // Arrange
       const mockStream1 = (async function* () {
-        yield { type: GeminiEventType.InvalidStream };
+        yield {
+          type: GeminiEventType.InvalidStream,
+          value: {
+            category: 'MALFORMED_CONTENT',
+            type: 'NO_RESPONSE_TEXT',
+          },
+        };
       })();
       const mockStream2 = (async function* () {
         yield { type: GeminiEventType.Content, value: 'Continued content' };
@@ -1453,7 +1459,10 @@ ${JSON.stringify(
 
       // Assert
       expect(events).toEqual([
-        { type: GeminiEventType.InvalidStream },
+        {
+          type: GeminiEventType.InvalidStream,
+          value: expect.objectContaining({ category: 'MALFORMED_CONTENT' }),
+        },
         { type: GeminiEventType.Content, value: 'Continued content' },
       ]);
 
@@ -1477,13 +1486,51 @@ ${JSON.stringify(
       );
     });
 
+    it('should not retry when InvalidStream category indicates safety block', async () => {
+      vi.spyOn(client['config'], 'getContinueOnFailedApiCall').mockReturnValue(
+        true,
+      );
+      const mockStream = (async function* () {
+        yield {
+          type: GeminiEventType.InvalidStream,
+          value: {
+            category: 'SAFETY_BLOCK',
+            type: 'SAFETY_BLOCKED',
+          },
+        };
+      })();
+
+      mockTurnRunFn.mockReturnValueOnce(mockStream);
+
+      const stream = client.sendMessageStream(
+        [{ text: 'Hi' }],
+        new AbortController().signal,
+        'prompt-safety-invalid',
+      );
+      const events = await fromAsync(stream);
+
+      expect(events).toEqual([
+        {
+          type: GeminiEventType.InvalidStream,
+          value: expect.objectContaining({ category: 'SAFETY_BLOCK' }),
+        },
+      ]);
+      expect(mockTurnRunFn).toHaveBeenCalledTimes(1);
+    });
+
     it('should not recursively call sendMessageStream with "Please continue." when InvalidStream event is received and flag is false', async () => {
       vi.spyOn(client['config'], 'getContinueOnFailedApiCall').mockReturnValue(
         false,
       );
       // Arrange
       const mockStream1 = (async function* () {
-        yield { type: GeminiEventType.InvalidStream };
+        yield {
+          type: GeminiEventType.InvalidStream,
+          value: {
+            category: 'MALFORMED_CONTENT',
+            type: 'NO_RESPONSE_TEXT',
+          },
+        };
       })();
 
       mockTurnRunFn.mockReturnValueOnce(mockStream1);
@@ -1504,7 +1551,12 @@ ${JSON.stringify(
       const events = await fromAsync(stream);
 
       // Assert
-      expect(events).toEqual([{ type: GeminiEventType.InvalidStream }]);
+      expect(events).toEqual([
+        {
+          type: GeminiEventType.InvalidStream,
+          value: expect.objectContaining({ category: 'MALFORMED_CONTENT' }),
+        },
+      ]);
 
       // Verify that turn.run was called only once
       expect(mockTurnRunFn).toHaveBeenCalledTimes(1);
@@ -1518,7 +1570,13 @@ ${JSON.stringify(
       // Always return a new invalid stream
       mockTurnRunFn.mockImplementation(() =>
         (async function* () {
-          yield { type: GeminiEventType.InvalidStream };
+          yield {
+            type: GeminiEventType.InvalidStream,
+            value: {
+              category: 'MALFORMED_CONTENT',
+              type: 'NO_RESPONSE_TEXT',
+            },
+          };
         })(),
       );
 
