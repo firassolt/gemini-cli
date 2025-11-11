@@ -29,6 +29,7 @@ import type {
 } from '../services/chatRecordingService.js';
 import type { ChatCompressionService } from '../services/chatCompressionService.js';
 import type { LoopDetectionService } from '../services/loopDetectionService.js';
+import { VerificationService } from '../services/verificationService.js';
 import type { ContentGenerator } from './contentGenerator.js';
 import { GeminiChat } from './geminiChat.js';
 import { getCoreSystemPrompt } from './prompts.js';
@@ -46,14 +47,16 @@ import { uiTelemetryService } from '../telemetry/uiTelemetry.js';
 import {
   logContentRetryFailure,
   logNextSpeakerCheck,
+  logVerification,
 } from '../telemetry/loggers.js';
 import {
   ContentRetryFailureEvent,
   NextSpeakerCheckEvent,
+  VerificationEvent,
 } from '../telemetry/types.js';
 import { checkNextSpeaker } from '../utils/nextSpeakerChecker.js';
 import { debugLogger } from '../utils/debugLogger.js';
-import type { RoutingContext } from '../routing/routingStrategy.js';
+import type { RoutingContext, RoutingDecision } from '../routing/routingStrategy.js';
 
 const MAX_TURNS = 100;
 
@@ -85,6 +88,7 @@ export class ConversationLifecycleService {
   private lastSentIdeContext: IdeContext | undefined;
   private forceFullIdeContext = true;
   private hasFailedCompressionAttempt = false;
+  private readonly verificationService: VerificationService;
 
   constructor(
     private readonly config: Config,
@@ -92,6 +96,7 @@ export class ConversationLifecycleService {
     private readonly compressionService: ChatCompressionService,
   ) {
     this.lastPromptId = this.config.getSessionId();
+    this.verificationService = new VerificationService(config);
   }
 
   getLoopDetectionService(): LoopDetectionService {
@@ -335,16 +340,39 @@ export class ConversationLifecycleService {
     };
 
     let modelToUse: string;
+    let routingDecision: RoutingDecision | undefined;
     if (this.currentSequenceModel) {
       modelToUse = this.currentSequenceModel;
     } else {
       const router = await this.config.getModelRouterService();
-      const decision = await router.route(routingContext);
-      modelToUse = decision.model;
+      routingDecision = await router.route(routingContext);
+      modelToUse = routingDecision.model;
       this.currentSequenceModel = modelToUse;
     }
 
-    const resultStream = turn.run(modelToUse, request, linkedSignal);
+    const verificationOptions = routingDecision?.metadata.requiresVerification
+      ? {
+          required: true,
+          reason: routingDecision.metadata.verificationReason,
+          run: (input: {
+            finalText: string;
+            model: string;
+            promptId: string;
+            signal: AbortSignal;
+          }) =>
+            this.verificationService.verify({
+              finalText: input.finalText,
+              model: input.model,
+              promptId: input.promptId,
+              signal: input.signal,
+              reason: routingDecision?.metadata.verificationReason,
+            }),
+        }
+      : undefined;
+
+    const resultStream = turn.run(modelToUse, request, linkedSignal, {
+      verification: verificationOptions,
+    });
     for await (const event of resultStream) {
       if (this.loopDetector.addAndCheck(event)) {
         yield { type: GeminiEventType.LoopDetected };
@@ -386,6 +414,8 @@ export class ConversationLifecycleService {
       }
     }
 
+    this.recordVerificationResult(turn, promptId, modelToUse, routingDecision);
+
     if (!turn.pendingToolCalls.length && signal && !signal.aborted) {
       if (this.config.getQuotaErrorOccurred()) {
         return turn;
@@ -422,6 +452,42 @@ export class ConversationLifecycleService {
     }
 
     return turn;
+  }
+
+  private recordVerificationResult(
+    turn: Turn,
+    promptId: string,
+    model: string,
+    routingDecision: RoutingDecision | undefined,
+  ): void {
+    const verification = turn.getVerificationResult();
+    if (!verification) {
+      return;
+    }
+
+    const chatRecording = this.getChatRecordingService();
+    chatRecording?.recordGrounding({
+      required: verification.required,
+      status: verification.status,
+      reason: verification.reason ?? routingDecision?.metadata.verificationReason,
+      query: verification.query,
+      assertions: verification.assertions,
+    });
+
+    const groundedCount = verification.assertions.filter(
+      (assertion) => assertion.grounded,
+    ).length;
+
+    const event = new VerificationEvent(
+      promptId,
+      model,
+      verification.required,
+      verification.status,
+      groundedCount,
+      verification.assertions.length,
+      verification.reason ?? routingDecision?.metadata.verificationReason,
+    );
+    logVerification(this.config, event);
   }
 
   async generateContent(

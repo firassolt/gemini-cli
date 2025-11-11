@@ -37,6 +37,7 @@ import type {
   RecoveryAttemptEvent,
   WebFetchFallbackAttemptEvent,
   ExtensionUpdateEvent,
+  VerificationEvent,
 } from '../types.js';
 import { EventMetadataKey } from './event-metadata-key.js';
 import type { Config } from '../../config/config.js';
@@ -85,6 +86,7 @@ export enum EventNames {
   EXTENSION_UPDATE = 'extension_update',
   TOOL_OUTPUT_TRUNCATED = 'tool_output_truncated',
   MODEL_ROUTING = 'model_routing',
+  VERIFICATION = 'verification',
   MODEL_SLASH_COMMAND = 'model_slash_command',
   SMART_EDIT_STRATEGY = 'smart_edit_strategy',
   SMART_EDIT_CORRECTION = 'smart_edit_correction',
@@ -1082,6 +1084,43 @@ export class ClearcutLogger {
     }
 
     this.enqueueLogEvent(this.createLogEvent(EventNames.MODEL_ROUTING, data));
+    this.flushIfNeeded();
+  }
+
+  logVerificationEvent(event: VerificationEvent): void {
+    const data: EventValue[] = [
+      {
+        gemini_cli_key: EventMetadataKey.GEMINI_CLI_PROMPT_ID,
+        value: event.prompt_id,
+      },
+      {
+        gemini_cli_key: EventMetadataKey.GEMINI_CLI_VERIFICATION_REQUIRED,
+        value: event.required.toString(),
+      },
+      {
+        gemini_cli_key: EventMetadataKey.GEMINI_CLI_VERIFICATION_STATUS,
+        value: event.status,
+      },
+      {
+        gemini_cli_key:
+          EventMetadataKey.GEMINI_CLI_VERIFICATION_GROUNDED_ASSERTIONS,
+        value: event.grounded_assertions.toString(),
+      },
+      {
+        gemini_cli_key:
+          EventMetadataKey.GEMINI_CLI_VERIFICATION_TOTAL_ASSERTIONS,
+        value: event.total_assertions.toString(),
+      },
+    ];
+
+    if (event.reason) {
+      data.push({
+        gemini_cli_key: EventMetadataKey.GEMINI_CLI_VERIFICATION_REASON,
+        value: event.reason,
+      });
+    }
+
+    this.enqueueLogEvent(this.createLogEvent(EventNames.VERIFICATION, data));
     this.flushIfNeeded();
   }
 

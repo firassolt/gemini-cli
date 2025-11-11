@@ -7,7 +7,7 @@
 // Defines valid event metadata keys for Clearcut logging.
 export enum EventMetadataKey {
   // Deleted enums: 24
-  // Next ID: 122
+  // Next ID: 127
 
   GEMINI_CLI_KEY_UNKNOWN = 0,
 
@@ -101,6 +101,16 @@ export enum EventMetadataKey {
 
   // Logs the reason for web fetch fallback.
   GEMINI_CLI_WEB_FETCH_FALLBACK_REASON = 116,
+
+  // ==========================================================================
+  // Verification Event Keys
+  // ===========================================================================
+
+  GEMINI_CLI_VERIFICATION_REQUIRED = 122,
+  GEMINI_CLI_VERIFICATION_STATUS = 123,
+  GEMINI_CLI_VERIFICATION_GROUNDED_ASSERTIONS = 124,
+  GEMINI_CLI_VERIFICATION_TOTAL_ASSERTIONS = 125,
+  GEMINI_CLI_VERIFICATION_REASON = 126,
 
   // ==========================================================================
   // GenAI API Request Event Keys

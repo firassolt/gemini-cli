@@ -178,6 +178,7 @@ export class ClassifierStrategy implements RoutingStrategy {
             source: 'Classifier',
             latencyMs,
             reasoning,
+            requiresVerification: false,
           },
         };
       } else {
@@ -187,6 +188,8 @@ export class ClassifierStrategy implements RoutingStrategy {
             source: 'Classifier',
             reasoning,
             latencyMs,
+            requiresVerification: true,
+            verificationReason: 'classifier_complexity',
           },
         };
       }

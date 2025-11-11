@@ -390,6 +390,84 @@ describe('ChatRecordingService', () => {
     });
   });
 
+  describe('recordGrounding', () => {
+    beforeEach(() => {
+      chatRecordingService.initialize();
+    });
+
+    it('should persist grounding metadata on the latest gemini message', () => {
+      const existingConversation: ConversationRecord = {
+        sessionId: 'test-session-id',
+        projectHash: 'test-project-hash',
+        startTime: '2025-01-01T00:00:00.000Z',
+        lastUpdated: '2025-01-01T00:00:00.000Z',
+        messages: [
+          {
+            id: 'user-1',
+            timestamp: '2025-01-01T00:00:00.000Z',
+            type: 'user',
+            content: 'Hello',
+          },
+          {
+            id: 'gemini-1',
+            timestamp: '2025-01-01T00:00:10.000Z',
+            type: 'gemini',
+            content: 'Hi there',
+          },
+        ],
+      };
+
+      vi.spyOn(fs, 'readFileSync').mockReturnValue(
+        JSON.stringify(existingConversation),
+      );
+      const writeSpy = vi
+        .spyOn(fs, 'writeFileSync')
+        .mockImplementation(() => undefined);
+
+      vi.useFakeTimers();
+      const now = new Date('2025-01-01T00:05:00.000Z');
+      vi.setSystemTime(now);
+
+      chatRecordingService.recordGrounding({
+        required: true,
+        status: 'grounded',
+        reason: 'classifier_complexity',
+        query: 'example query',
+        assertions: [
+          {
+            assertion: 'Answer',
+            grounded: true,
+            sources: [{ title: 'Source', uri: 'https://example.com' }],
+            snippet: 'Answer snippet',
+          },
+        ],
+      });
+
+      expect(writeSpy).toHaveBeenCalledTimes(1);
+      const [, content] = writeSpy.mock.calls[0];
+      const updatedConversation = JSON.parse(content as string) as ConversationRecord;
+      const lastMessage = updatedConversation.messages.at(-1)!;
+      expect(lastMessage.type).toBe('gemini');
+      expect(lastMessage.grounding).toEqual({
+        required: true,
+        status: 'grounded',
+        reason: 'classifier_complexity',
+        query: 'example query',
+        assertions: [
+          {
+            assertion: 'Answer',
+            grounded: true,
+            sources: [{ title: 'Source', uri: 'https://example.com' }],
+            snippet: 'Answer snippet',
+          },
+        ],
+        timestamp: now.toISOString(),
+      });
+
+      vi.useRealTimers();
+    });
+  });
+
   describe('deleteSession', () => {
     it('should delete the session file', () => {
       const unlinkSyncSpy = vi

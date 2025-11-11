@@ -16,6 +16,7 @@ import { OverrideStrategy } from './strategies/overrideStrategy.js';
 import { ClassifierStrategy } from './strategies/classifierStrategy.js';
 import { logModelRouting } from '../telemetry/loggers.js';
 import { ModelRoutingEvent } from '../telemetry/types.js';
+import { ApprovalMode } from '../policy/types.js';
 
 vi.mock('../config/config.js');
 vi.mock('../core/baseLlmClient.js');
@@ -88,6 +89,7 @@ describe('ModelRouterService', () => {
         source: 'test-router/fallback',
         latencyMs: 10,
         reasoning: 'Strategy reasoning',
+        requiresVerification: false,
       },
     };
 
@@ -120,6 +122,8 @@ describe('ModelRouterService', () => {
         'Strategy reasoning',
         false,
         undefined,
+        false,
+        undefined,
       );
       expect(logModelRouting).toHaveBeenCalledWith(
         mockConfig,
@@ -139,12 +143,83 @@ describe('ModelRouterService', () => {
         'router-exception',
         expect.any(Number),
         'An exception occurred during routing.',
+        false,
+        undefined,
         true,
         'Strategy failed',
       );
       expect(logModelRouting).toHaveBeenCalledWith(
         mockConfig,
         expect.any(ModelRoutingEvent),
+      );
+    });
+
+    it('should require verification when approval mode is AUTO_EDIT', async () => {
+      vi.spyOn(mockConfig, 'getApprovalMode').mockReturnValue(
+        ApprovalMode.AUTO_EDIT,
+      );
+      const decisionWithoutVerification: RoutingDecision = {
+        model: 'auto-edit-model',
+        metadata: {
+          source: 'test-router/default',
+          latencyMs: 15,
+          reasoning: 'auto edit enforcement',
+          requiresVerification: false,
+        },
+      };
+      vi.spyOn(mockCompositeStrategy, 'route').mockResolvedValue(
+        decisionWithoutVerification,
+      );
+
+      const decision = await service.route(mockContext);
+
+      expect(decision.metadata.requiresVerification).toBe(true);
+      expect(decision.metadata.verificationReason).toBe('policy_auto_edit');
+      expect(ModelRoutingEvent).toHaveBeenCalledWith(
+        'auto-edit-model',
+        'test-router/default',
+        15,
+        'auto edit enforcement',
+        true,
+        'policy_auto_edit',
+        false,
+        undefined,
+      );
+    });
+
+    it('should merge verification reasons with policy-enforced ones', async () => {
+      vi.spyOn(mockConfig, 'getApprovalMode').mockReturnValue(
+        ApprovalMode.AUTO_EDIT,
+      );
+      const decisionWithReason: RoutingDecision = {
+        model: 'pro-model',
+        metadata: {
+          source: 'classifier',
+          latencyMs: 20,
+          reasoning: 'classifier flagged complex task',
+          requiresVerification: true,
+          verificationReason: 'classifier_complexity',
+        },
+      };
+      vi.spyOn(mockCompositeStrategy, 'route').mockResolvedValue(
+        decisionWithReason,
+      );
+
+      const decision = await service.route(mockContext);
+
+      expect(decision.metadata.requiresVerification).toBe(true);
+      expect(decision.metadata.verificationReason).toBe(
+        'classifier_complexity;policy_auto_edit',
+      );
+      expect(ModelRoutingEvent).toHaveBeenCalledWith(
+        'pro-model',
+        'classifier',
+        20,
+        'classifier flagged complex task',
+        true,
+        'classifier_complexity;policy_auto_edit',
+        false,
+        undefined,
       );
     });
   });

@@ -10,7 +10,7 @@ import type {
   ServerGeminiErrorEvent,
 } from './turn.js';
 import { Turn, GeminiEventType } from './turn.js';
-import type { GenerateContentResponse, Part, Content } from '@google/genai';
+import type { GenerateContentResponse, Part, Content, FinishReason } from '@google/genai';
 import { reportError } from '../utils/errorReporting.js';
 import type { GeminiChat } from './geminiChat.js';
 import { StreamEventType } from './geminiChat.js';
@@ -866,6 +866,94 @@ describe('Turn', () => {
           traceId: 'trace-456',
         },
       ]);
+    });
+
+    it('emits verification summary and stores result when verification succeeds', async () => {
+      const mockResponseStream = (async function* () {
+        yield {
+          type: StreamEventType.CHUNK,
+          value: {
+            responseId: 'trace-1',
+            candidates: [
+              { content: { parts: [{ text: 'Verified answer' }] } },
+            ],
+          } as GenerateContentResponse,
+        };
+        yield {
+          type: StreamEventType.CHUNK,
+          value: {
+            responseId: 'trace-2',
+            candidates: [
+              {
+                content: { parts: [] },
+                finishReason: 'STOP' as FinishReason,
+              },
+            ],
+          } as GenerateContentResponse,
+        };
+      })();
+      mockSendMessageStream.mockResolvedValue(mockResponseStream);
+
+      const verificationResult = {
+        required: true,
+        status: 'grounded' as const,
+        reason: 'classifier_complexity',
+        summaryText: 'Verification result:\n- ✅ Grounded.',
+        assertions: [
+          {
+            assertion: 'Verified answer',
+            grounded: true,
+            sources: [],
+            snippet: 'Verified answer',
+          },
+        ],
+      };
+
+      const verificationRun = vi.fn().mockResolvedValue(verificationResult);
+
+      const events: unknown[] = [];
+      const reqParts: Part[] = [{ text: 'Verify me' }];
+      for await (const event of turn.run(
+        'test-model',
+        reqParts,
+        new AbortController().signal,
+        {
+          verification: {
+            required: true,
+            reason: 'classifier_complexity',
+            run: verificationRun,
+          },
+        },
+      )) {
+        events.push(event);
+      }
+
+      expect(verificationRun).toHaveBeenCalledWith({
+        finalText: 'Verified answer',
+        model: 'test-model',
+        promptId: 'prompt-id-1',
+        signal: expect.any(AbortSignal),
+      });
+
+      expect(events).toEqual([
+        expect.objectContaining({
+          type: GeminiEventType.Content,
+          value: 'Verified answer',
+        }),
+        expect.objectContaining({
+          type: GeminiEventType.Content,
+          value: verificationResult.summaryText,
+        }),
+        {
+          type: GeminiEventType.Finished,
+          value: {
+            reason: 'STOP' as FinishReason,
+            usageMetadata: undefined,
+          },
+        },
+      ]);
+
+      expect(turn.getVerificationResult()).toEqual(verificationResult);
     });
   });
 

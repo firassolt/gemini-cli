@@ -32,6 +32,7 @@ import {
   AgentStartEvent,
   AgentFinishEvent,
   WebFetchFallbackAttemptEvent,
+  VerificationEvent,
 } from '../types.js';
 import { AgentTerminateMode } from '../../agents/types.js';
 import { GIT_COMMIT_INFO, CLI_VERSION } from '../../generated/git-commit.js';
@@ -650,6 +651,8 @@ describe('ClearcutLogger', () => {
         'some reasoning',
         false,
         undefined,
+        false,
+        undefined,
       );
 
       logger?.logModelRoutingEvent(event);
@@ -682,6 +685,8 @@ describe('ClearcutLogger', () => {
         'router-exception',
         234,
         'some reasoning',
+        false,
+        undefined,
         true,
         'Something went wrong',
       );
@@ -710,6 +715,51 @@ describe('ClearcutLogger', () => {
       expect(events[0]).toHaveMetadataValue([
         EventMetadataKey.GEMINI_CLI_ROUTING_FAILURE_REASON,
         'Something went wrong',
+      ]);
+    });
+  });
+
+  describe('logVerificationEvent', () => {
+    it('logs verification metadata', () => {
+      const { logger } = setup();
+      const event = new VerificationEvent(
+        'prompt-123',
+        'gemini-pro',
+        true,
+        'grounded',
+        1,
+        1,
+        'policy_auto_edit',
+      );
+
+      logger?.logVerificationEvent(event);
+
+      const events = getEvents(logger!);
+      expect(events.length).toBe(1);
+      expect(events[0]).toHaveEventName(EventNames.VERIFICATION);
+      expect(events[0]).toHaveMetadataValue([
+        EventMetadataKey.GEMINI_CLI_PROMPT_ID,
+        'prompt-123',
+      ]);
+      expect(events[0]).toHaveMetadataValue([
+        EventMetadataKey.GEMINI_CLI_VERIFICATION_REQUIRED,
+        'true',
+      ]);
+      expect(events[0]).toHaveMetadataValue([
+        EventMetadataKey.GEMINI_CLI_VERIFICATION_STATUS,
+        'grounded',
+      ]);
+      expect(events[0]).toHaveMetadataValue([
+        EventMetadataKey.GEMINI_CLI_VERIFICATION_GROUNDED_ASSERTIONS,
+        '1',
+      ]);
+      expect(events[0]).toHaveMetadataValue([
+        EventMetadataKey.GEMINI_CLI_VERIFICATION_TOTAL_ASSERTIONS,
+        '1',
+      ]);
+      expect(events[0]).toHaveMetadataValue([
+        EventMetadataKey.GEMINI_CLI_VERIFICATION_REASON,
+        'policy_auto_edit',
       ]);
     });
   });

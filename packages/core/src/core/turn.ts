@@ -37,6 +37,22 @@ import {
 import type { RetryEventPayload } from './retryController.js';
 import { parseThought, type ThoughtSummary } from '../utils/thoughtUtils.js';
 import { createUserContent } from '@google/genai';
+import type { VerificationResult } from '../services/verificationService.js';
+
+export interface TurnVerificationOptions {
+  required: boolean;
+  reason?: string;
+  run(input: {
+    finalText: string;
+    model: string;
+    promptId: string;
+    signal: AbortSignal;
+  }): Promise<VerificationResult>;
+}
+
+export interface TurnRunOptions {
+  verification?: TurnVerificationOptions;
+}
 
 // Define a structure for tools passed to the server
 export interface ServerTool {
@@ -235,6 +251,9 @@ export class Turn {
   private debugResponses: GenerateContentResponse[] = [];
   private pendingCitations = new Set<string>();
   finishReason: FinishReason | undefined = undefined;
+  private aggregatedContent = '';
+  private verificationHandled = false;
+  private verificationResult?: VerificationResult;
 
   constructor(
     private readonly chat: GeminiChat,
@@ -245,7 +264,11 @@ export class Turn {
     model: string,
     req: PartListUnion,
     signal: AbortSignal,
+    options?: TurnRunOptions,
   ): AsyncGenerator<ServerGeminiStreamEvent> {
+    this.aggregatedContent = '';
+    this.verificationHandled = false;
+    this.verificationResult = undefined;
     try {
       // Note: This assumes `sendMessageStream` yields events like
       // { type: StreamEventType.RETRY, value: RetryEventPayload }
@@ -294,6 +317,7 @@ export class Turn {
 
         const text = getResponseText(resp);
         if (text) {
+          this.aggregatedContent += text;
           yield { type: GeminiEventType.Content, value: text, traceId };
         }
 
@@ -324,6 +348,49 @@ export class Turn {
           }
 
           this.finishReason = finishReason;
+
+          if (!this.verificationHandled && options?.verification?.required) {
+            this.verificationHandled = true;
+            try {
+              const verification = await options.verification.run({
+                finalText: this.aggregatedContent,
+                model,
+                promptId: this.prompt_id,
+                signal,
+              });
+              this.verificationResult = verification;
+              if (verification.summaryText) {
+                yield {
+                  type: GeminiEventType.Content,
+                  value: verification.summaryText,
+                  traceId,
+                };
+              }
+            } catch (error) {
+              const fallbackSummary =
+                'Verification result:\n- ⚠️ Verification failed unexpectedly. Treat this answer as unverified.';
+              this.verificationResult = {
+                required: true,
+                status: 'uncertain',
+                reason: 'verification_exception',
+                summaryText: fallbackSummary,
+                assertions: [
+                  {
+                    assertion: this.aggregatedContent.slice(0, 400),
+                    grounded: false,
+                    sources: [],
+                    note: `Verification threw: ${String(error)}`,
+                  },
+                ],
+              };
+              yield {
+                type: GeminiEventType.Content,
+                value: fallbackSummary,
+                traceId,
+              };
+            }
+          }
+
           yield {
             type: GeminiEventType.Finished,
             value: {
@@ -409,6 +476,10 @@ export class Turn {
 
   getDebugResponses(): GenerateContentResponse[] {
     return this.debugResponses;
+  }
+
+  getVerificationResult(): VerificationResult | undefined {
+    return this.verificationResult;
   }
 }
 

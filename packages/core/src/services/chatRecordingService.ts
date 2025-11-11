@@ -57,6 +57,23 @@ export interface ToolCallRecord {
   renderOutputAsMarkdown?: boolean;
 }
 
+export interface GroundingAssertionRecord {
+  assertion: string;
+  grounded: boolean;
+  sources: Array<{ title?: string; uri?: string }>;
+  snippet?: string;
+  note?: string;
+}
+
+export interface GroundingRecord {
+  required: boolean;
+  status: 'grounded' | 'uncertain' | 'skipped';
+  reason?: string;
+  query?: string;
+  assertions: GroundingAssertionRecord[];
+  timestamp: string;
+}
+
 /**
  * Message type and message type-specific fields.
  */
@@ -70,6 +87,7 @@ export type ConversationRecordExtra =
       thoughts?: Array<ThoughtSummary & { timestamp: string }>;
       tokens?: TokensSummary | null;
       model?: string;
+      grounding?: GroundingRecord;
     };
 
 /**
@@ -375,6 +393,35 @@ export class ChatRecordingService {
         'Error adding tool call to message in chat history.',
         error,
       );
+      throw error;
+    }
+  }
+
+  recordGrounding(record: {
+    required: boolean;
+    status: GroundingRecord['status'];
+    reason?: string;
+    query?: string;
+    assertions: GroundingAssertionRecord[];
+  }): void {
+    if (!this.conversationFile) return;
+
+    try {
+      this.updateConversation((conversation) => {
+        const lastMsg = this.getLastMessage(conversation);
+        if (lastMsg && lastMsg.type === 'gemini') {
+          lastMsg.grounding = {
+            required: record.required,
+            status: record.status,
+            reason: record.reason,
+            query: record.query,
+            assertions: record.assertions,
+            timestamp: new Date().toISOString(),
+          };
+        }
+      });
+    } catch (error) {
+      debugLogger.error('Error recording grounding metadata.', error);
       throw error;
     }
   }
