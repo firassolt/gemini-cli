@@ -1132,6 +1132,110 @@ export class ContentRetryFailureEvent implements BaseTelemetryEvent {
   }
 }
 
+export const EVENT_STREAM_RETRY_ATTEMPT =
+  'gemini_cli.chat.stream_retry_attempt';
+
+export class StreamRetryAttemptEvent implements BaseTelemetryEvent {
+  'event.name': 'stream_retry_attempt';
+  'event.timestamp': string;
+  attempt_number: number;
+  max_attempts: number;
+  error_category: 'safety_block' | 'malformed_content';
+  error_type: string;
+  model: string;
+  prompt_id: string;
+  has_partial_response: boolean;
+
+  constructor(
+    attempt_number: number,
+    max_attempts: number,
+    error_category: 'safety_block' | 'malformed_content',
+    error_type: string,
+    model: string,
+    prompt_id: string,
+    has_partial_response: boolean,
+  ) {
+    this['event.name'] = 'stream_retry_attempt';
+    this['event.timestamp'] = new Date().toISOString();
+    this.attempt_number = attempt_number;
+    this.max_attempts = max_attempts;
+    this.error_category = error_category;
+    this.error_type = error_type;
+    this.model = model;
+    this.prompt_id = prompt_id;
+    this.has_partial_response = has_partial_response;
+  }
+
+  toOpenTelemetryAttributes(config: Config): LogAttributes {
+    return {
+      ...getCommonAttributes(config),
+      'event.name': EVENT_STREAM_RETRY_ATTEMPT,
+      'event.timestamp': this['event.timestamp'],
+      attempt_number: this.attempt_number,
+      max_attempts: this.max_attempts,
+      error_category: this.error_category,
+      error_type: this.error_type,
+      model: this.model,
+      prompt_id: this.prompt_id,
+      has_partial_response: this.has_partial_response,
+    };
+  }
+
+  toLogBody(): string {
+    return `Stream retry attempt ${this.attempt_number + 1} due to ${this.error_type}.`;
+  }
+}
+
+export const EVENT_STREAM_RETRY_FAILURE =
+  'gemini_cli.chat.stream_retry_failure';
+
+export class StreamRetryFailureEvent implements BaseTelemetryEvent {
+  'event.name': 'stream_retry_failure';
+  'event.timestamp': string;
+  total_attempts: number;
+  error_category: 'safety_block' | 'malformed_content';
+  final_error_type: string;
+  model: string;
+  prompt_id: string;
+  had_partial_response: boolean;
+
+  constructor(
+    total_attempts: number,
+    error_category: 'safety_block' | 'malformed_content',
+    final_error_type: string,
+    model: string,
+    prompt_id: string,
+    had_partial_response: boolean,
+  ) {
+    this['event.name'] = 'stream_retry_failure';
+    this['event.timestamp'] = new Date().toISOString();
+    this.total_attempts = total_attempts;
+    this.error_category = error_category;
+    this.final_error_type = final_error_type;
+    this.model = model;
+    this.prompt_id = prompt_id;
+    this.had_partial_response = had_partial_response;
+  }
+
+  toOpenTelemetryAttributes(config: Config): LogAttributes {
+    return {
+      ...getCommonAttributes(config),
+      'event.name': EVENT_STREAM_RETRY_FAILURE,
+      'event.timestamp': this['event.timestamp'],
+      total_attempts: this.total_attempts,
+      error_category: this.error_category,
+      final_error_type: this.final_error_type,
+      model: this.model,
+      prompt_id: this.prompt_id,
+      had_partial_response: this.had_partial_response,
+    };
+  }
+
+  toLogBody(): string {
+    return `Stream retries exhausted after ${this.total_attempts} attempts.`;
+  }
+}
+
 export const EVENT_MODEL_ROUTING = 'gemini_cli.model_routing';
 export class ModelRoutingEvent implements BaseTelemetryEvent {
   'event.name': 'model_routing';
@@ -1437,6 +1541,8 @@ export type TelemetryEvent =
   | InvalidChunkEvent
   | ContentRetryEvent
   | ContentRetryFailureEvent
+  | StreamRetryAttemptEvent
+  | StreamRetryFailureEvent
   | ExtensionEnableEvent
   | ExtensionInstallEvent
   | ExtensionUninstallEvent

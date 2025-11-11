@@ -33,6 +33,8 @@ import type {
   InvalidChunkEvent,
   ContentRetryEvent,
   ContentRetryFailureEvent,
+  StreamRetryAttemptEvent,
+  StreamRetryFailureEvent,
   RipgrepFallbackEvent,
   ToolOutputTruncatedEvent,
   ModelRoutingEvent,
@@ -458,6 +460,34 @@ export function logContentRetryFailure(
   };
   logger.emit(logRecord);
   recordContentRetryFailure(config);
+}
+
+export function logStreamRetryAttempt(
+  config: Config,
+  event: StreamRetryAttemptEvent,
+): void {
+  if (!isTelemetrySdkInitialized()) return;
+
+  const logger = logs.getLogger(SERVICE_NAME);
+  const logRecord: LogRecord = {
+    body: event.toLogBody(),
+    attributes: event.toOpenTelemetryAttributes(config),
+  };
+  logger.emit(logRecord);
+}
+
+export function logStreamRetryFailure(
+  config: Config,
+  event: StreamRetryFailureEvent,
+): void {
+  if (!isTelemetrySdkInitialized()) return;
+
+  const logger = logs.getLogger(SERVICE_NAME);
+  const logRecord: LogRecord = {
+    body: event.toLogBody(),
+    attributes: event.toOpenTelemetryAttributes(config),
+  };
+  logger.emit(logRecord);
 }
 
 export function logModelRouting(

@@ -533,7 +533,11 @@ export class GeminiClient {
       this.updateTelemetryTokenCount();
 
       if (event.type === GeminiEventType.InvalidStream) {
-        if (this.config.getContinueOnFailedApiCall()) {
+        const invalidCategory = event.value?.category;
+        if (
+          this.config.getContinueOnFailedApiCall() &&
+          invalidCategory !== 'SAFETY_BLOCK'
+        ) {
           if (isInvalidStreamRetry) {
             // We already retried once, so stop here.
             logContentRetryFailure(
