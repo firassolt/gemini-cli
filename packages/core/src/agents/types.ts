@@ -10,6 +10,7 @@
 
 import type { Content, FunctionDeclaration } from '@google/genai';
 import type { AnyDeclarativeTool } from '../tools/tools.js';
+import type { AgentPolicyConfig } from '../policy/declarativePolicy.js';
 import { type z } from 'zod';
 
 /**
@@ -63,6 +64,7 @@ export interface AgentDefinition<TOutput extends z.ZodTypeAny = z.ZodUnknown> {
   toolConfig?: ToolConfig;
   outputConfig?: OutputConfig<TOutput>;
   inputConfig: InputConfig;
+  policyConfig?: AgentPolicyConfig;
   /**
    * An optional function to process the raw output from the agent's final tool
    * call into a string format.

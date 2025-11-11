@@ -286,6 +286,31 @@ describe('AgentExecutor', () => {
       expect(executor).toBeInstanceOf(AgentExecutor);
     });
 
+    it('should append declarative policy instructions to the system prompt', async () => {
+      const definition = createTestDefinition([LS_TOOL_NAME]);
+      definition.policyConfig = {
+        rules: { allowedTools: [LS_TOOL_NAME] },
+      };
+
+      const executor = await AgentExecutor.create(
+        definition,
+        mockConfig,
+        onActivity,
+      );
+
+      const chatFactory = executor as unknown as {
+        createChatObject: (inputs: AgentInputs) => Promise<GeminiChat>;
+      };
+
+      await chatFactory.createChatObject({ goal: 'Add policy' });
+
+      const lastCall = MockedGeminiChat.mock.calls.at(-1);
+      expect(lastCall).toBeDefined();
+      const generationConfig = lastCall?.[1] as GenerateContentConfig;
+      expect(generationConfig.systemInstruction).toContain('# Declarative Policy');
+      expect(generationConfig.systemInstruction).toContain('Allowed tools');
+    });
+
     it('SECURITY: should throw if a tool is not on the non-interactive allowlist', async () => {
       const definition = createTestDefinition([MOCK_TOOL_NOT_ALLOWED.name]);
       await expect(

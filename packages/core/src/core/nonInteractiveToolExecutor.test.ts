@@ -18,6 +18,7 @@ import {
   DEFAULT_TRUNCATE_TOOL_OUTPUT_THRESHOLD,
   ToolErrorType,
   ApprovalMode,
+  DeclarativeTaskPolicy,
 } from '../index.js';
 import type { Part } from '@google/genai';
 import { MockTool } from '../test-utils/mock-tool.js';
@@ -372,5 +373,32 @@ describe('executeToolCall', () => {
     );
 
     expect(response.contentLength).toBeUndefined();
+  });
+
+  it('should surface declarative policy violations as structured tool errors', async () => {
+    const request: ToolCallRequestInfo = {
+      callId: 'policy-call',
+      name: 'testTool',
+      args: {},
+      isClientInitiated: false,
+      prompt_id: 'prompt-policy',
+    };
+    const policy = new DeclarativeTaskPolicy(
+      { allowedTools: ['otherTool'] },
+      '/workspace',
+    );
+
+    vi.mocked(mockToolRegistry.getTool).mockReturnValue(mockTool);
+
+    const { response } = await executeToolCall(
+      mockConfig,
+      request,
+      abortController.signal,
+      { agentPolicy: policy },
+    );
+
+    expect(executeFn).not.toHaveBeenCalled();
+    expect(response.errorType).toBe(ToolErrorType.POLICY_VIOLATION);
+    expect(response.error?.message).toContain('policy');
   });
 });

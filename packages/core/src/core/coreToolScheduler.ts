@@ -16,6 +16,7 @@ import type {
   AnyDeclarativeTool,
   AnyToolInvocation,
   AnsiOutput,
+  DeclarativeTaskPolicy,
 } from '../index.js';
 import {
   ToolConfirmationOutcome,
@@ -38,6 +39,7 @@ import {
 import * as Diff from 'diff';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
+import { DeclarativePolicyViolationError } from '../policy/declarativePolicy.js';
 import {
   isShellInvocationAllowlisted,
   SHELL_TOOL_NAMES,
@@ -330,6 +332,7 @@ interface CoreToolSchedulerOptions {
   onToolCallsUpdate?: ToolCallsUpdateHandler;
   getPreferredEditor: () => EditorType | undefined;
   onEditorClose: () => void;
+  agentPolicy?: DeclarativeTaskPolicy;
 }
 
 export class CoreToolScheduler {
@@ -347,6 +350,7 @@ export class CoreToolScheduler {
   private getPreferredEditor: () => EditorType | undefined;
   private config: Config;
   private onEditorClose: () => void;
+  private readonly agentPolicy?: DeclarativeTaskPolicy;
   private isFinalizingToolCalls = false;
   private isScheduling = false;
   private isCancelling = false;
@@ -366,6 +370,7 @@ export class CoreToolScheduler {
     this.onToolCallsUpdate = options.onToolCallsUpdate;
     this.getPreferredEditor = options.getPreferredEditor;
     this.onEditorClose = options.onEditorClose;
+    this.agentPolicy = options.agentPolicy;
 
     // Subscribe to message bus for ASK_USER policy decisions
     // Use a static WeakMap to ensure we only subscribe ONCE per MessageBus instance
@@ -789,6 +794,27 @@ export class CoreToolScheduler {
               ),
               durationMs: 0,
             };
+          }
+
+          if (this.agentPolicy) {
+            const violation = this.agentPolicy.validateToolCall(
+              reqInfo.name,
+              invocationOrError,
+            );
+            if (violation) {
+              const error = new DeclarativePolicyViolationError(violation);
+              return {
+                status: 'error',
+                request: reqInfo,
+                tool: toolInstance,
+                response: createErrorResponse(
+                  reqInfo,
+                  error,
+                  ToolErrorType.POLICY_VIOLATION,
+                ),
+                durationMs: 0,
+              };
+            }
           }
 
           return {
