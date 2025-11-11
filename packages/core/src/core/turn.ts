@@ -26,8 +26,15 @@ import {
   UnauthorizedError,
   toFriendlyError,
 } from '../utils/errors.js';
+import { StreamEventType } from './geminiChat.js';
 import type { GeminiChat } from './geminiChat.js';
-import { InvalidStreamError } from './geminiChat.js';
+import {
+  InvalidStreamError,
+  type InvalidStreamErrorCategory,
+  type InvalidStreamErrorContext,
+  type InvalidStreamErrorType,
+} from './invalidStreamError.js';
+import type { RetryEventPayload } from './retryController.js';
 import { parseThought, type ThoughtSummary } from '../utils/thoughtUtils.js';
 import { createUserContent } from '@google/genai';
 
@@ -66,6 +73,7 @@ export enum GeminiEventType {
 
 export type ServerGeminiRetryEvent = {
   type: GeminiEventType.Retry;
+  value: RetryEventPayload;
 };
 
 export type ServerGeminiContextWindowWillOverflowEvent = {
@@ -76,8 +84,15 @@ export type ServerGeminiContextWindowWillOverflowEvent = {
   };
 };
 
+export interface InvalidStreamEventValue {
+  category: InvalidStreamErrorCategory;
+  type: InvalidStreamErrorType;
+  context?: InvalidStreamErrorContext;
+}
+
 export type ServerGeminiInvalidStreamEvent = {
   type: GeminiEventType.InvalidStream;
+  value: InvalidStreamEventValue;
 };
 
 export interface StructuredError {
@@ -233,7 +248,8 @@ export class Turn {
   ): AsyncGenerator<ServerGeminiStreamEvent> {
     try {
       // Note: This assumes `sendMessageStream` yields events like
-      // { type: StreamEventType.RETRY } or { type: StreamEventType.CHUNK, value: GenerateContentResponse }
+      // { type: StreamEventType.RETRY, value: RetryEventPayload }
+      // or { type: StreamEventType.CHUNK, value: GenerateContentResponse }
       const responseStream = await this.chat.sendMessageStream(
         model,
         {
@@ -252,13 +268,13 @@ export class Turn {
         }
 
         // Handle the new RETRY event
-        if (streamEvent.type === 'retry') {
-          yield { type: GeminiEventType.Retry };
+        if (streamEvent.type === StreamEventType.RETRY) {
+          yield { type: GeminiEventType.Retry, value: streamEvent.value };
           continue; // Skip to the next event in the stream
         }
 
         // Assuming other events are chunks with a `value` property
-        const resp = streamEvent.value as GenerateContentResponse;
+        const resp = streamEvent.value;
         if (!resp) continue; // Skip if there's no response body
 
         this.debugResponses.push(resp);
@@ -325,7 +341,14 @@ export class Turn {
       }
 
       if (e instanceof InvalidStreamError) {
-        yield { type: GeminiEventType.InvalidStream };
+        yield {
+          type: GeminiEventType.InvalidStream,
+          value: {
+            category: e.category,
+            type: e.type,
+            context: e.context ? structuredClone(e.context) : undefined,
+          },
+        };
         return;
       }
 

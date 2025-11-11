@@ -12,12 +12,8 @@ import type {
 } from '@google/genai';
 import { ApiError } from '@google/genai';
 import type { ContentGenerator } from '../core/contentGenerator.js';
-import {
-  GeminiChat,
-  InvalidStreamError,
-  StreamEventType,
-  type StreamEvent,
-} from './geminiChat.js';
+import { GeminiChat, StreamEventType, type StreamEvent } from './geminiChat.js';
+import { InvalidStreamError } from './invalidStreamError.js';
 import type { Config } from '../config/config.js';
 import { setSimulate429 } from '../utils/testUtils.js';
 import { DEFAULT_GEMINI_FLASH_MODEL } from '../config/models.js';
@@ -68,14 +64,23 @@ vi.mock('../fallback/handler.js', () => ({
   handleFallback: mockHandleFallback,
 }));
 
-const { mockLogContentRetry, mockLogContentRetryFailure } = vi.hoisted(() => ({
+const {
+  mockLogContentRetry,
+  mockLogContentRetryFailure,
+  mockLogStreamRetryAttempt,
+  mockLogStreamRetryFailure,
+} = vi.hoisted(() => ({
   mockLogContentRetry: vi.fn(),
   mockLogContentRetryFailure: vi.fn(),
+  mockLogStreamRetryAttempt: vi.fn(),
+  mockLogStreamRetryFailure: vi.fn(),
 }));
 
 vi.mock('../telemetry/loggers.js', () => ({
   logContentRetry: mockLogContentRetry,
   logContentRetryFailure: mockLogContentRetryFailure,
+  logStreamRetryAttempt: mockLogStreamRetryAttempt,
+  logStreamRetryFailure: mockLogStreamRetryFailure,
 }));
 
 vi.mock('../telemetry/uiTelemetry.js', () => ({
@@ -644,6 +649,54 @@ describe('GeminiChat', () => {
       ).rejects.toThrow(InvalidStreamError);
     });
 
+    it('should classify safety blocked responses separately from malformed content', async () => {
+      const safetyBlockedStream = (async function* () {
+        yield {
+          candidates: [
+            {
+              content: { role: 'model', parts: [{ text: '' }] },
+              finishReason: 'SAFETY',
+              safetyRatings: [
+                {
+                  category: 'HARM_CATEGORY_DEROGATORY',
+                  probability: 'HIGH',
+                },
+              ],
+            },
+          ],
+          promptFeedback: { blockReason: 'SAFETY', safetyRatings: [] },
+        } as unknown as GenerateContentResponse;
+      })();
+
+      vi.mocked(mockContentGenerator.generateContentStream).mockResolvedValue(
+        safetyBlockedStream,
+      );
+
+      const stream = await chat.sendMessageStream(
+        'test-model',
+        { message: 'test' },
+        'prompt-id-safety-block',
+      );
+
+      let capturedError: unknown;
+      await expect(
+        (async () => {
+          try {
+            for await (const _ of stream) {
+              // consume
+            }
+          } catch (error) {
+            capturedError = error;
+            throw error;
+          }
+        })(),
+      ).rejects.toBeInstanceOf(InvalidStreamError);
+
+      const invalid = capturedError as InvalidStreamError;
+      expect(invalid.type).toBe('SAFETY_BLOCKED');
+      expect(invalid.category).toBe('SAFETY_BLOCK');
+    });
+
     it('should succeed when there is finish reason and response text', async () => {
       // Setup: Stream with both finish reason and text content
       const validStream = (async function* () {
@@ -803,6 +856,8 @@ describe('GeminiChat', () => {
 
       expect(retryEvent).toBeDefined();
       expect(retryEvent?.type).toBe(StreamEventType.RETRY);
+      expect(retryEvent?.value.errorType).toBe('NO_FINISH_REASON');
+      expect(retryEvent?.value.context).toBeDefined();
     });
     it('should retry on invalid content, succeed, and report metrics', async () => {
       // Use mockImplementationOnce to provide a fresh, promise-wrapped generator for each attempt.
@@ -848,6 +903,8 @@ describe('GeminiChat', () => {
 
       // Check for a retry event
       expect(chunks.some((c) => c.type === StreamEventType.RETRY)).toBe(true);
+      const retryEvent = chunks.find((c) => c.type === StreamEventType.RETRY);
+      expect(retryEvent?.value.errorType).toBe('NO_FINISH_REASON');
 
       // Check for the successful content chunk
       expect(
@@ -1639,6 +1696,8 @@ describe('GeminiChat', () => {
     // Check that a retry happened
     expect(mockContentGenerator.generateContentStream).toHaveBeenCalledTimes(2);
     expect(events.some((e) => e.type === StreamEventType.RETRY)).toBe(true);
+    const retryMeta = events.find((e) => e.type === StreamEventType.RETRY);
+    expect(retryMeta?.value.context?.partialResponseParts).toBeDefined();
 
     // Check the final recorded history
     const history = chat.getHistory();
