@@ -97,6 +97,7 @@ describe('ClassifierStrategy', () => {
         source: 'Classifier',
         latencyMs: expect.any(Number),
         reasoning: mockApiResponse.reasoning,
+        requiresVerification: false,
       },
     });
   });
@@ -124,6 +125,8 @@ describe('ClassifierStrategy', () => {
         source: 'Classifier',
         latencyMs: expect.any(Number),
         reasoning: mockApiResponse.reasoning,
+        requiresVerification: true,
+        verificationReason: 'classifier_complexity',
       },
     });
   });

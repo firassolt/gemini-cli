@@ -454,6 +454,8 @@ describe('Telemetry Metrics', () => {
         'test-reason',
         false,
         undefined,
+        false,
+        undefined,
       );
       recordModelRoutingMetricsModule(mockConfig, event);
       expect(mockHistogramRecordFn).not.toHaveBeenCalled();
@@ -467,6 +469,8 @@ describe('Telemetry Metrics', () => {
         'default',
         150,
         'test-reason',
+        false,
+        undefined,
         false,
         undefined,
       );
@@ -490,6 +494,8 @@ describe('Telemetry Metrics', () => {
         'classifier',
         200,
         'test-reason',
+        false,
+        undefined,
         true,
         'test-error',
       );

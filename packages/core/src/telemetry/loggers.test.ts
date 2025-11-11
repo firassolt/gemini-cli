@@ -35,6 +35,7 @@ import {
   logRipgrepFallback,
   logToolOutputTruncated,
   logModelRouting,
+  logVerification,
   logExtensionEnable,
   logExtensionDisable,
   logExtensionInstallEvent,
@@ -62,6 +63,7 @@ import {
   EVENT_EXTENSION_INSTALL,
   EVENT_EXTENSION_UNINSTALL,
   EVENT_TOOL_OUTPUT_TRUNCATED,
+  EVENT_VERIFICATION,
   EVENT_AGENT_START,
   EVENT_AGENT_FINISH,
   EVENT_WEB_FETCH_FALLBACK_ATTEMPT,
@@ -78,6 +80,7 @@ import {
   FileOperationEvent,
   ToolOutputTruncatedEvent,
   ModelRoutingEvent,
+  VerificationEvent,
   ExtensionEnableEvent,
   ExtensionDisableEvent,
   ExtensionInstallEvent,
@@ -1491,6 +1494,8 @@ describe('loggers', () => {
         'test-reason',
         false,
         undefined,
+        false,
+        undefined,
       );
 
       logModelRouting(mockConfig, event);
@@ -1524,6 +1529,8 @@ describe('loggers', () => {
         'default',
         100,
         'test-reason',
+        false,
+        undefined,
         false,
         undefined,
       );
@@ -1852,6 +1859,75 @@ describe('loggers', () => {
         mockConfig,
         event,
       );
+    });
+  });
+
+  describe('logVerification', () => {
+    const mockConfig = {
+      getSessionId: () => 'test-session-id',
+      getUsageStatisticsEnabled: () => true,
+      isInteractive: () => false,
+    } as unknown as Config;
+
+    beforeEach(() => {
+      vi.spyOn(ClearcutLogger.prototype, 'logVerificationEvent');
+      mockLogger.emit.mockReset();
+    });
+
+    it('should log verification events to Clearcut and OTEL', () => {
+      const event = new VerificationEvent(
+        'prompt-123',
+        'gemini-pro',
+        true,
+        'grounded',
+        1,
+        1,
+        'policy_auto_edit',
+      );
+
+      logVerification(mockConfig, event);
+
+      expect(
+        ClearcutLogger.prototype.logVerificationEvent,
+      ).toHaveBeenCalledWith(event);
+
+      expect(mockLogger.emit).toHaveBeenCalledWith({
+        body: 'Verification status: grounded (1/1 grounded).',
+        attributes: {
+          'session.id': 'test-session-id',
+          'user.email': 'test-user@example.com',
+          'installation.id': 'test-installation-id',
+          'event.name': EVENT_VERIFICATION,
+          'event.timestamp': event['event.timestamp'],
+          prompt_id: 'prompt-123',
+          model: 'gemini-pro',
+          required: true,
+          status: 'grounded',
+          grounded_assertions: 1,
+          total_assertions: 1,
+          reason: 'policy_auto_edit',
+          interactive: false,
+        },
+      });
+    });
+
+    it('should only call Clearcut when OTEL is disabled', () => {
+      vi.spyOn(sdk, 'isTelemetrySdkInitialized').mockReturnValue(false);
+      const event = new VerificationEvent(
+        'prompt-123',
+        'gemini-pro',
+        true,
+        'uncertain',
+        0,
+        1,
+      );
+
+      logVerification(mockConfig, event);
+
+      expect(
+        ClearcutLogger.prototype.logVerificationEvent,
+      ).toHaveBeenCalledWith(event);
+      expect(mockLogger.emit).not.toHaveBeenCalled();
     });
   });
 

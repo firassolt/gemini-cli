@@ -22,6 +22,8 @@ export interface RoutingDecision {
     latencyMs: number;
     reasoning: string;
     error?: string;
+    requiresVerification?: boolean;
+    verificationReason?: string;
   };
 }
 

@@ -1237,6 +1237,7 @@ export class StreamRetryFailureEvent implements BaseTelemetryEvent {
 }
 
 export const EVENT_MODEL_ROUTING = 'gemini_cli.model_routing';
+export const EVENT_VERIFICATION = 'gemini_cli.verification';
 export class ModelRoutingEvent implements BaseTelemetryEvent {
   'event.name': 'model_routing';
   'event.timestamp': string;
@@ -1244,6 +1245,8 @@ export class ModelRoutingEvent implements BaseTelemetryEvent {
   decision_source: string;
   routing_latency_ms: number;
   reasoning?: string;
+  verification_required: boolean;
+  verification_reason?: string;
   failed: boolean;
   error_message?: string;
 
@@ -1252,6 +1255,8 @@ export class ModelRoutingEvent implements BaseTelemetryEvent {
     decision_source: string,
     routing_latency_ms: number,
     reasoning: string | undefined,
+    verification_required: boolean,
+    verification_reason: string | undefined,
     failed: boolean,
     error_message: string | undefined,
   ) {
@@ -1261,6 +1266,8 @@ export class ModelRoutingEvent implements BaseTelemetryEvent {
     this.decision_source = decision_source;
     this.routing_latency_ms = routing_latency_ms;
     this.reasoning = reasoning;
+    this.verification_required = verification_required;
+    this.verification_reason = verification_reason;
     this.failed = failed;
     this.error_message = error_message;
   }
@@ -1274,6 +1281,8 @@ export class ModelRoutingEvent implements BaseTelemetryEvent {
       decision_source: this.decision_source,
       routing_latency_ms: this.routing_latency_ms,
       reasoning: this.reasoning,
+      verification_required: this.verification_required,
+      verification_reason: this.verification_reason,
       failed: this.failed,
       error_message: this.error_message,
     };
@@ -1281,6 +1290,59 @@ export class ModelRoutingEvent implements BaseTelemetryEvent {
 
   toLogBody(): string {
     return `Model routing decision. Model: ${this.decision_model}, Source: ${this.decision_source}`;
+  }
+}
+
+type VerificationEventStatus = 'grounded' | 'uncertain' | 'skipped';
+
+export class VerificationEvent implements BaseTelemetryEvent {
+  'event.name': 'verification';
+  'event.timestamp': string;
+  prompt_id: string;
+  model: string;
+  required: boolean;
+  status: VerificationEventStatus;
+  grounded_assertions: number;
+  total_assertions: number;
+  reason?: string;
+
+  constructor(
+    prompt_id: string,
+    model: string,
+    required: boolean,
+    status: VerificationEventStatus,
+    grounded_assertions: number,
+    total_assertions: number,
+    reason?: string,
+  ) {
+    this['event.name'] = 'verification';
+    this['event.timestamp'] = new Date().toISOString();
+    this.prompt_id = prompt_id;
+    this.model = model;
+    this.required = required;
+    this.status = status;
+    this.grounded_assertions = grounded_assertions;
+    this.total_assertions = total_assertions;
+    this.reason = reason;
+  }
+
+  toOpenTelemetryAttributes(config: Config): LogAttributes {
+    return {
+      ...getCommonAttributes(config),
+      'event.name': EVENT_VERIFICATION,
+      'event.timestamp': this['event.timestamp'],
+      prompt_id: this.prompt_id,
+      model: this.model,
+      required: this.required,
+      status: this.status,
+      grounded_assertions: this.grounded_assertions,
+      total_assertions: this.total_assertions,
+      reason: this.reason,
+    };
+  }
+
+  toLogBody(): string {
+    return `Verification status: ${this.status} (${this.grounded_assertions}/${this.total_assertions} grounded).`;
   }
 }
 
@@ -1547,6 +1609,7 @@ export type TelemetryEvent =
   | ExtensionInstallEvent
   | ExtensionUninstallEvent
   | ModelRoutingEvent
+  | VerificationEvent
   | ToolOutputTruncatedEvent
   | ModelSlashCommandEvent
   | AgentStartEvent

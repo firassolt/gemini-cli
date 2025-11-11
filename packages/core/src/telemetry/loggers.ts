@@ -50,6 +50,7 @@ import type {
   RecoveryAttemptEvent,
   WebFetchFallbackAttemptEvent,
   ExtensionUpdateEvent,
+  VerificationEvent,
 } from './types.js';
 import {
   recordApiErrorMetrics,
@@ -504,6 +505,21 @@ export function logModelRouting(
   };
   logger.emit(logRecord);
   recordModelRoutingMetrics(config, event);
+}
+
+export function logVerification(
+  config: Config,
+  event: VerificationEvent,
+): void {
+  ClearcutLogger.getInstance(config)?.logVerificationEvent(event);
+  if (!isTelemetrySdkInitialized()) return;
+
+  const logger = logs.getLogger(SERVICE_NAME);
+  const logRecord: LogRecord = {
+    body: event.toLogBody(),
+    attributes: event.toOpenTelemetryAttributes(config),
+  };
+  logger.emit(logRecord);
 }
 
 export function logModelSlashCommand(

@@ -18,6 +18,7 @@ import { OverrideStrategy } from './strategies/overrideStrategy.js';
 
 import { logModelRouting } from '../telemetry/loggers.js';
 import { ModelRoutingEvent } from '../telemetry/types.js';
+import { ApprovalMode } from '../policy/types.js';
 
 /**
  * A centralized service for making model routing decisions.
@@ -62,11 +63,15 @@ export class ModelRouterService {
         this.config.getBaseLlmClient(),
       );
 
+      decision = this.applyVerificationHints(decision);
+
       const event = new ModelRoutingEvent(
         decision.model,
         decision.metadata.source,
         decision.metadata.latencyMs,
         decision.metadata.reasoning,
+        decision.metadata.requiresVerification ?? false,
+        decision.metadata.verificationReason,
         false, // failed
         undefined, // error_message
       );
@@ -94,6 +99,8 @@ export class ModelRouterService {
         decision.metadata.source,
         decision.metadata.latencyMs,
         decision.metadata.reasoning,
+        decision.metadata.requiresVerification ?? false,
+        decision.metadata.verificationReason,
         failed,
         error_message,
       );
@@ -102,5 +109,33 @@ export class ModelRouterService {
 
       throw e;
     }
+  }
+
+  private applyVerificationHints(decision: RoutingDecision): RoutingDecision {
+    const reasons = new Set<string>();
+    const metadata = { ...decision.metadata };
+    if (metadata.verificationReason) {
+      reasons.add(metadata.verificationReason);
+    }
+
+    let requiresVerification = metadata.requiresVerification ?? false;
+
+    if (this.config.getApprovalMode() === ApprovalMode.AUTO_EDIT) {
+      requiresVerification = true;
+      reasons.add('policy_auto_edit');
+    }
+
+    if (!requiresVerification) {
+      return decision;
+    }
+
+    return {
+      ...decision,
+      metadata: {
+        ...metadata,
+        requiresVerification,
+        verificationReason: Array.from(reasons).join(';') || undefined,
+      },
+    };
   }
 }

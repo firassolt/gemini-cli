@@ -47,6 +47,7 @@ export {
   logWebFetchFallbackAttempt,
   logStreamRetryAttempt,
   logStreamRetryFailure,
+  logVerification,
 } from './loggers.js';
 export type { SlashCommandEvent, ChatCompressionEvent } from './types.js';
 export {
@@ -63,6 +64,7 @@ export {
   ToolOutputTruncatedEvent,
   WebFetchFallbackAttemptEvent,
   ToolCallDecision,
+  VerificationEvent,
 } from './types.js';
 export { makeSlashCommandEvent, makeChatCompressionEvent } from './types.js';
 export type { TelemetryEvent } from './types.js';
