@@ -5,182 +5,128 @@
  */
 
 import type {
-  GenerateContentConfig,
-  PartListUnion,
   Content,
+  GenerateContentConfig,
   GenerateContentResponse,
+  PartListUnion,
 } from '@google/genai';
-import type { ServerGeminiStreamEvent, ChatCompressionInfo } from './turn.js';
+
 import type {
   ChatRecordingService,
   ResumedSessionData,
 } from '../services/chatRecordingService.js';
 import type { GeminiChat } from './geminiChat.js';
-import type { IdeContext } from '../ide/types.js';
 import type { Config } from '../config/config.js';
+import type { ChatCompressionInfo, ServerGeminiStreamEvent } from './turn.js';
+import { Turn } from './turn.js';
 import { ConversationLifecycleService } from './conversationLifecycleService.js';
 import { LoopDetectionService } from '../services/loopDetectionService.js';
 import { ChatCompressionService } from '../services/chatCompressionService.js';
-import { Turn } from './turn.js';
 
-export {
-  ConversationLifecycleService,
-  isThinkingSupported,
-  isThinkingDefault,
-} from './conversationLifecycleService.js';
+export { ConversationLifecycleService, isThinkingDefault, isThinkingSupported } from './conversationLifecycleService.js';
+
+type GeminiClientDependencies = {
+  lifecycleService?: ConversationLifecycleService;
+  loopDetectionService?: LoopDetectionService;
+  chatCompressionService?: ChatCompressionService;
+};
 
 export class GeminiClient {
-  private readonly lifecycleService: ConversationLifecycleService;
-  private readonly config: Config;
-  // The following declarations maintain compatibility with test suites that
-  // reach into the Gemini client to stub internal collaborators.
-  private declare chat?: GeminiChat;
-  private declare startChat: (
-    ...args: unknown[]
-  ) => Promise<GeminiChat> | GeminiChat;
-  private declare currentSequenceModel: string | null;
-  private declare forceFullIdeContext: boolean;
-  private declare lastSentIdeContext?: IdeContext;
-  private declare loopDetector: LoopDetectionService;
+  private readonly lifecycle: ConversationLifecycleService;
 
   constructor(
-    config: Config,
-    lifecycleService?: ConversationLifecycleService,
+    readonly config: Config,
+    dependencies: GeminiClientDependencies = {},
   ) {
-    this.config = config;
-    this.lifecycleService =
-      lifecycleService ??
-      new ConversationLifecycleService(
-        config,
-        new LoopDetectionService(config),
-        new ChatCompressionService(),
+    if (dependencies.lifecycleService) {
+      this.lifecycle = dependencies.lifecycleService;
+    } else {
+      const loopDetector =
+        dependencies.loopDetectionService ?? new LoopDetectionService(this.config);
+      const compressionService =
+        dependencies.chatCompressionService ?? new ChatCompressionService();
+      this.lifecycle = new ConversationLifecycleService(
+        this.config,
+        loopDetector,
+        compressionService,
       );
+    }
+  }
 
-    // Maintain access to the configuration object for tests that mock internals.
-    void this.config;
-
-    const lifecycle: Record<string, unknown> =
-      this.lifecycleService as unknown as Record<string, unknown>;
-
-    Object.defineProperties(this, {
-      chat: {
-        configurable: true,
-        get: () => lifecycle['chat'],
-        set: (value) => {
-          lifecycle['chat'] = value;
-        },
-      },
-      startChat: {
-        configurable: true,
-        get: () => {
-          const startChat = lifecycle['startChat'];
-          if (typeof startChat === 'function') {
-            return startChat.bind(this.lifecycleService);
-          }
-          return startChat;
-        },
-        set: (value) => {
-          lifecycle['startChat'] = value;
-        },
-      },
-      currentSequenceModel: {
-        configurable: true,
-        get: () => lifecycle['currentSequenceModel'],
-        set: (value) => {
-          lifecycle['currentSequenceModel'] = value;
-        },
-      },
-      forceFullIdeContext: {
-        configurable: true,
-        get: () => lifecycle['forceFullIdeContext'],
-        set: (value) => {
-          lifecycle['forceFullIdeContext'] = value;
-        },
-      },
-      lastSentIdeContext: {
-        configurable: true,
-        get: () => lifecycle['lastSentIdeContext'],
-        set: (value) => {
-          lifecycle['lastSentIdeContext'] = value;
-        },
-      },
-      loopDetector: {
-        configurable: true,
-        get: () => lifecycle['loopDetector'],
-      },
-    });
+  getLifecycleForTesting(): ConversationLifecycleService {
+    return this.lifecycle;
   }
 
   async initialize(): Promise<void> {
-    await this.lifecycleService.initialize();
+    await this.lifecycle.initialize();
   }
 
   async addHistory(content: Content): Promise<void> {
-    await this.lifecycleService.addHistory(content);
+    this.lifecycle.addHistory(content);
   }
 
   getChat(): GeminiChat {
-    return this.lifecycleService.getChat();
+    return this.lifecycle.getChat();
   }
 
   isInitialized(): boolean {
-    return this.lifecycleService.isInitialized();
+    return this.lifecycle.isInitialized();
   }
 
   getHistory(): Content[] {
-    return this.lifecycleService.getHistory();
+    return this.lifecycle.getHistory();
   }
 
   stripThoughtsFromHistory(): void {
-    this.lifecycleService.stripThoughtsFromHistory();
+    this.lifecycle.stripThoughtsFromHistory();
   }
 
   setHistory(history: Content[]): void {
-    this.lifecycleService.setHistory(history);
+    this.lifecycle.setHistory(history);
   }
 
   async setTools(): Promise<void> {
-    await this.lifecycleService.setTools();
+    await this.lifecycle.setTools();
   }
 
   async resetChat(): Promise<void> {
-    await this.lifecycleService.resetChat();
+    await this.lifecycle.resetChat();
   }
 
   async resumeChat(
     history: Content[],
     resumedSessionData?: ResumedSessionData,
   ): Promise<void> {
-    await this.lifecycleService.resumeChat(history, resumedSessionData);
+    await this.lifecycle.resumeChat(history, resumedSessionData);
   }
 
   getChatRecordingService(): ChatRecordingService | undefined {
-    return this.lifecycleService.getChatRecordingService();
+    return this.lifecycle.getChatRecordingService();
   }
 
   getLoopDetectionService(): LoopDetectionService {
-    return this.lifecycleService.getLoopDetectionService();
+    return this.lifecycle.getLoopDetectionService();
   }
 
   getCurrentSequenceModel(): string | null {
-    return this.lifecycleService.getCurrentSequenceModel();
+    return this.lifecycle.getCurrentSequenceModel();
   }
 
   async addDirectoryContext(): Promise<void> {
-    await this.lifecycleService.addDirectoryContext();
+    await this.lifecycle.addDirectoryContext();
   }
 
   async *sendMessageStream(
     request: PartListUnion,
     signal: AbortSignal,
-    prompt_id: string,
+    promptId: string,
     turns?: number,
     isInvalidStreamRetry?: boolean,
   ): AsyncGenerator<ServerGeminiStreamEvent, Turn> {
-    return yield* this.lifecycleService.sendMessageStream(
+    return yield* this.lifecycle.sendMessageStream(
       request,
       signal,
-      prompt_id,
+      promptId,
       turns,
       isInvalidStreamRetry,
     );
@@ -192,7 +138,7 @@ export class GeminiClient {
     abortSignal: AbortSignal,
     model: string,
   ): Promise<GenerateContentResponse> {
-    return this.lifecycleService.generateContent(
+    return this.lifecycle.generateContent(
       contents,
       generationConfig,
       abortSignal,
@@ -201,9 +147,10 @@ export class GeminiClient {
   }
 
   async tryCompressChat(
-    prompt_id: string,
+    promptId: string,
     force?: boolean,
   ): Promise<ChatCompressionInfo> {
-    return this.lifecycleService.tryCompressChat(prompt_id, force);
+    return this.lifecycle.tryCompressChat(promptId, force);
   }
 }
+

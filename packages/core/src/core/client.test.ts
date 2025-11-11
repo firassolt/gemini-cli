@@ -20,6 +20,7 @@ import {
   isThinkingSupported,
   GeminiClient,
 } from './client.js';
+import { ConversationLifecycleService } from './conversationLifecycleService.js';
 import {
   AuthType,
   type ContentGenerator,
@@ -172,6 +173,7 @@ describe('Gemini Client (client.ts)', () => {
   let mockContentGenerator: ContentGenerator;
   let mockConfig: Config;
   let client: GeminiClient;
+  let lifecycle: ConversationLifecycleService;
   let mockGenerateContentFn: Mock;
   beforeEach(async () => {
     vi.resetAllMocks();
@@ -266,6 +268,7 @@ describe('Gemini Client (client.ts)', () => {
     } as unknown as Config;
 
     client = new GeminiClient(mockConfig);
+    lifecycle = client.getLifecycleForTesting();
     await client.initialize();
     vi.mocked(mockConfig.getGeminiClient).mockReturnValue(client);
 
@@ -281,7 +284,7 @@ describe('Gemini Client (client.ts)', () => {
       const mockChat = {
         addHistory: vi.fn(),
       } as unknown as GeminiChat;
-      client['chat'] = mockChat;
+      lifecycle['chat'] = mockChat;
 
       const newContent = {
         role: 'user',
@@ -329,7 +332,7 @@ describe('Gemini Client (client.ts)', () => {
         tokenLimit: vi.fn(),
       }));
 
-      client['chat'] = {
+      lifecycle['chat'] = {
         getHistory: mockGetHistory,
         addHistory: vi.fn(),
         setHistory: vi.fn(),
@@ -351,7 +354,7 @@ describe('Gemini Client (client.ts)', () => {
         setHistory: vi.fn(),
         getLastPromptTokenCount: vi.fn().mockReturnValue(originalTokenCount),
       };
-      client['chat'] = mockOriginalChat as GeminiChat;
+      lifecycle['chat'] = mockOriginalChat as GeminiChat;
 
       vi.mocked(uiTelemetryService.getLastPromptTokenCount).mockReturnValue(
         originalTokenCount,
@@ -380,7 +383,7 @@ describe('Gemini Client (client.ts)', () => {
         getLastPromptTokenCount: vi.fn().mockReturnValue(newTokenCount),
       };
 
-      client['startChat'] = vi
+      lifecycle['startChat'] = vi
         .fn()
         .mockResolvedValue(mockNewChat as GeminiChat);
 
@@ -453,7 +456,7 @@ describe('Gemini Client (client.ts)', () => {
         await client.tryCompressChat('prompt-id-4', false);
 
         // On failure, the chat should NOT be replaced
-        expect(client['chat']).toBe(mockOriginalChat);
+        expect(lifecycle['chat']).toBe(mockOriginalChat);
       });
 
       it.skip('will not attempt to compress context after a failure', async () => {
@@ -661,7 +664,7 @@ describe('Gemini Client (client.ts)', () => {
         getHistory: vi.fn().mockReturnValue([]),
         getLastPromptTokenCount: vi.fn(),
       } as unknown as GeminiChat;
-      client['chat'] = mockChat;
+      lifecycle['chat'] = mockChat;
 
       const initialRequest: Part[] = [{ text: 'Hi' }];
 
@@ -724,7 +727,7 @@ ${JSON.stringify(
         getHistory: vi.fn().mockReturnValue([]),
         getLastPromptTokenCount: vi.fn(),
       };
-      client['chat'] = mockChat as GeminiChat;
+      lifecycle['chat'] = mockChat as GeminiChat;
 
       const initialRequest = [{ text: 'Hi' }];
 
@@ -785,7 +788,7 @@ ${JSON.stringify(
         getHistory: vi.fn().mockReturnValue([]),
         getLastPromptTokenCount: vi.fn(),
       };
-      client['chat'] = mockChat as GeminiChat;
+      lifecycle['chat'] = mockChat as GeminiChat;
 
       const initialRequest = [{ text: 'Hi' }];
 
@@ -862,7 +865,7 @@ ${JSON.stringify(
         getHistory: vi.fn().mockReturnValue([]),
         getLastPromptTokenCount: vi.fn(),
       };
-      client['chat'] = mockChat as GeminiChat;
+      lifecycle['chat'] = mockChat as GeminiChat;
 
       const initialRequest = [{ text: 'Hi' }];
 
@@ -909,7 +912,7 @@ ${JSON.stringify(
         getHistory: vi.fn().mockReturnValue([]),
         getLastPromptTokenCount: vi.fn(),
       };
-      client['chat'] = mockChat as GeminiChat;
+      lifecycle['chat'] = mockChat as GeminiChat;
 
       // Act
       const stream = client.sendMessageStream(
@@ -957,7 +960,7 @@ ${JSON.stringify(
         getHistory: vi.fn().mockReturnValue([]),
         getLastPromptTokenCount: vi.fn(),
       };
-      client['chat'] = mockChat as GeminiChat;
+      lifecycle['chat'] = mockChat as GeminiChat;
 
       // Use a signal that never gets aborted
       const abortController = new AbortController();
@@ -1022,7 +1025,7 @@ ${JSON.stringify(
         getHistory: vi.fn().mockReturnValue([]),
         getLastPromptTokenCount: vi.fn(),
       };
-      client['chat'] = mockChat as GeminiChat;
+      lifecycle['chat'] = mockChat as GeminiChat;
 
       // Act & Assert
       // Run up to the limit
@@ -1079,7 +1082,7 @@ ${JSON.stringify(
         getHistory: vi.fn().mockReturnValue([]),
         getLastPromptTokenCount: vi.fn(),
       };
-      client['chat'] = mockChat as GeminiChat;
+      lifecycle['chat'] = mockChat as GeminiChat;
 
       // Use a signal that never gets aborted
       const abortController = new AbortController();
@@ -1138,7 +1141,7 @@ ${JSON.stringify(
         getLastPromptTokenCount: vi.fn().mockReturnValue(lastPromptTokenCount),
         getHistory: vi.fn().mockReturnValue([]),
       };
-      client['chat'] = mockChat as GeminiChat;
+      lifecycle['chat'] = mockChat as GeminiChat;
 
       // Remaining = 100. Threshold (95%) = 95.
       // We need a request > 95 tokens.
@@ -1191,7 +1194,7 @@ ${JSON.stringify(
       });
 
       // Set the sticky model
-      client['currentSequenceModel'] = STICKY_MODEL;
+      lifecycle['currentSequenceModel'] = STICKY_MODEL;
 
       // Set token count
       const lastPromptTokenCount = 900;
@@ -1199,7 +1202,7 @@ ${JSON.stringify(
         getLastPromptTokenCount: vi.fn().mockReturnValue(lastPromptTokenCount),
         getHistory: vi.fn().mockReturnValue([]),
       };
-      client['chat'] = mockChat as GeminiChat;
+      lifecycle['chat'] = mockChat as GeminiChat;
 
       // Remaining (sticky) = 100. Threshold (95%) = 95.
       // We need a request > 95 tokens.
@@ -1262,7 +1265,7 @@ ${JSON.stringify(
           getHistory: vi.fn().mockReturnValue([]),
           getLastPromptTokenCount: vi.fn(),
         };
-        client['chat'] = mockChat as GeminiChat;
+        lifecycle['chat'] = mockChat as GeminiChat;
       });
 
       it('should use the model router service to select a model on the first turn', async () => {
@@ -1438,7 +1441,7 @@ ${JSON.stringify(
         getHistory: vi.fn().mockReturnValue([]),
         getLastPromptTokenCount: vi.fn(),
       };
-      client['chat'] = mockChat as GeminiChat;
+      lifecycle['chat'] = mockChat as GeminiChat;
 
       const initialRequest = [{ text: 'Hi' }];
       const promptId = 'prompt-id-invalid-stream';
@@ -1490,7 +1493,7 @@ ${JSON.stringify(
         getHistory: vi.fn().mockReturnValue([]),
         getLastPromptTokenCount: vi.fn(),
       };
-      client['chat'] = mockChat as GeminiChat;
+      lifecycle['chat'] = mockChat as GeminiChat;
 
       const initialRequest = [{ text: 'Hi' }];
       const promptId = 'prompt-id-invalid-stream';
@@ -1524,7 +1527,7 @@ ${JSON.stringify(
         getHistory: vi.fn().mockReturnValue([]),
         getLastPromptTokenCount: vi.fn(),
       };
-      client['chat'] = mockChat as GeminiChat;
+      lifecycle['chat'] = mockChat as GeminiChat;
 
       const initialRequest = [{ text: 'Hi' }];
       const promptId = 'prompt-id-infinite-invalid-stream';
@@ -1551,7 +1554,7 @@ ${JSON.stringify(
       })();
 
       beforeEach(() => {
-        client['forceFullIdeContext'] = false; // Reset before each delta test
+        lifecycle['forceFullIdeContext'] = false; // Reset before each delta test
         vi.spyOn(client, 'tryCompressChat').mockResolvedValue({
           originalTokenCount: 0,
           newTokenCount: 0,
@@ -1571,7 +1574,7 @@ ${JSON.stringify(
             ]),
           getLastPromptTokenCount: vi.fn(),
         };
-        client['chat'] = mockChat as GeminiChat;
+        lifecycle['chat'] = mockChat as GeminiChat;
       });
 
       const testCases = [
@@ -1681,7 +1684,7 @@ ${JSON.stringify(
           shouldSendContext,
         }) => {
           // Setup previous context
-          client['lastSentIdeContext'] = {
+          lifecycle['lastSentIdeContext'] = {
             workspaceState: {
               openFiles: [
                 {
@@ -1717,7 +1720,7 @@ ${JSON.stringify(
             // consume stream
           }
 
-          const mockChat = client['chat'] as unknown as {
+          const mockChat = lifecycle['chat'] as unknown as {
             addHistory: (typeof vi)['fn'];
           };
 
@@ -1747,7 +1750,7 @@ ${JSON.stringify(
         };
 
         // Setup previous context
-        client['lastSentIdeContext'] = {
+        lifecycle['lastSentIdeContext'] = {
           workspaceState: {
             openFiles: [
               {
@@ -1771,7 +1774,7 @@ ${JSON.stringify(
         });
 
         // Make history empty
-        const mockChat = client['chat'] as unknown as {
+        const mockChat = lifecycle['chat'] as unknown as {
           getHistory: ReturnType<(typeof vi)['fn']>;
           addHistory: ReturnType<(typeof vi)['fn']>;
         };
@@ -1830,7 +1833,7 @@ ${JSON.stringify(
           setHistory: vi.fn(),
           getLastPromptTokenCount: vi.fn(),
         };
-        client['chat'] = mockChat as GeminiChat;
+        lifecycle['chat'] = mockChat as GeminiChat;
 
         vi.spyOn(client['config'], 'getIdeMode').mockReturnValue(true);
         vi.mocked(ideContextStore.get).mockReturnValue({
@@ -2171,7 +2174,7 @@ ${JSON.stringify(
         getHistory: vi.fn().mockReturnValue([]),
         getLastPromptTokenCount: vi.fn(),
       };
-      client['chat'] = mockChat as GeminiChat;
+      lifecycle['chat'] = mockChat as GeminiChat;
 
       // Act
       const stream = client.sendMessageStream(
@@ -2208,7 +2211,7 @@ ${JSON.stringify(
         getHistory: vi.fn().mockReturnValue([]),
         getLastPromptTokenCount: vi.fn(),
       };
-      client['chat'] = mockChat as GeminiChat;
+      lifecycle['chat'] = mockChat as GeminiChat;
 
       // Act
       const stream = client.sendMessageStream(
@@ -2226,8 +2229,8 @@ ${JSON.stringify(
 
     it('should abort linked signal when loop is detected', async () => {
       // Arrange
-      vi.spyOn(client['loopDetector'], 'turnStarted').mockResolvedValue(false);
-      vi.spyOn(client['loopDetector'], 'addAndCheck')
+      vi.spyOn(lifecycle.getLoopDetectionService(), 'turnStarted').mockResolvedValue(false);
+      vi.spyOn(lifecycle.getLoopDetectionService(), 'addAndCheck')
         .mockReturnValueOnce(false)
         .mockReturnValueOnce(true);
 
@@ -2245,7 +2248,7 @@ ${JSON.stringify(
         getHistory: vi.fn().mockReturnValue([]),
         getLastPromptTokenCount: vi.fn(),
       };
-      client['chat'] = mockChat as GeminiChat;
+      lifecycle['chat'] = mockChat as GeminiChat;
 
       // Act
       const stream = client.sendMessageStream(
