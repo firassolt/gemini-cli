@@ -50,6 +50,7 @@ import { ShellToolInvocation } from '../tools/shell.js';
 import type { ToolConfirmationRequest } from '../confirmation-bus/types.js';
 import { MessageBusType } from '../confirmation-bus/types.js';
 import type { MessageBus } from '../confirmation-bus/message-bus.js';
+import { SessionMode } from '../config/session-mode.js';
 
 export type ValidatingToolCall = {
   status: 'validating';
@@ -58,6 +59,7 @@ export type ValidatingToolCall = {
   invocation: AnyToolInvocation;
   startTime?: number;
   outcome?: ToolConfirmationOutcome;
+  requiresUserApproval?: boolean;
 };
 
 export type ScheduledToolCall = {
@@ -67,6 +69,7 @@ export type ScheduledToolCall = {
   invocation: AnyToolInvocation;
   startTime?: number;
   outcome?: ToolConfirmationOutcome;
+  requiresUserApproval?: boolean;
 };
 
 export type ErroredToolCall = {
@@ -76,6 +79,7 @@ export type ErroredToolCall = {
   tool?: AnyDeclarativeTool;
   durationMs?: number;
   outcome?: ToolConfirmationOutcome;
+  requiresUserApproval?: boolean;
 };
 
 export type SuccessfulToolCall = {
@@ -86,6 +90,7 @@ export type SuccessfulToolCall = {
   invocation: AnyToolInvocation;
   durationMs?: number;
   outcome?: ToolConfirmationOutcome;
+  requiresUserApproval?: boolean;
 };
 
 export type ExecutingToolCall = {
@@ -97,6 +102,7 @@ export type ExecutingToolCall = {
   startTime?: number;
   outcome?: ToolConfirmationOutcome;
   pid?: number;
+  requiresUserApproval?: boolean;
 };
 
 export type CancelledToolCall = {
@@ -107,6 +113,7 @@ export type CancelledToolCall = {
   invocation: AnyToolInvocation;
   durationMs?: number;
   outcome?: ToolConfirmationOutcome;
+  requiresUserApproval?: boolean;
 };
 
 export type WaitingToolCall = {
@@ -117,6 +124,7 @@ export type WaitingToolCall = {
   confirmationDetails: ToolCallConfirmationDetails;
   startTime?: number;
   outcome?: ToolConfirmationOutcome;
+  requiresUserApproval?: boolean;
 };
 
 export type Status = ToolCall['status'];
@@ -149,6 +157,18 @@ export type AllToolCallsCompleteHandler = (
 ) => Promise<void>;
 
 export type ToolCallsUpdateHandler = (toolCalls: ToolCall[]) => void;
+
+interface CancellationMetadata {
+  reason?: string;
+  annotation?: string;
+  mode?: SessionMode;
+}
+
+interface NormalizedCancellationMetadata {
+  reason: string;
+  annotation?: string;
+  mode?: SessionMode;
+}
 
 /**
  * Formats tool output for a Gemini FunctionResponse.
@@ -426,7 +446,7 @@ export class CoreToolScheduler {
     targetCallId: string,
     status: 'cancelled',
     signal: AbortSignal,
-    reason: string,
+    metadata?: CancellationMetadata,
   ): void;
   private setStatusInternal(
     targetCallId: string,
@@ -455,33 +475,66 @@ export class CoreToolScheduler {
       const invocation = currentCall.invocation;
 
       const outcome = currentCall.outcome;
+      const requiresUserApproval = currentCall.requiresUserApproval ?? false;
+      const approvalMode = requiresUserApproval
+        ? SessionMode.BUILD
+        : this.config.getSessionMode();
 
       switch (newStatus) {
         case 'success': {
           const durationMs = existingStartTime
             ? Date.now() - existingStartTime
             : undefined;
+          const shouldAnnotate = requiresUserApproval && outcome !== undefined;
+          let response = auxiliaryData as ToolCallResponseInfo;
+          if (shouldAnnotate) {
+            response = {
+              ...response,
+              responseParts: this.annotateWithApproval(response.responseParts, {
+                approved: outcome !== ToolConfirmationOutcome.Cancel,
+                requiresUserApproval,
+                outcome,
+                mode: approvalMode,
+              }),
+            };
+          }
           return {
             request: currentCall.request,
             tool: toolInstance,
             invocation,
             status: 'success',
-            response: auxiliaryData as ToolCallResponseInfo,
+            response,
             durationMs,
             outcome,
+            requiresUserApproval,
           } as SuccessfulToolCall;
         }
         case 'error': {
           const durationMs = existingStartTime
             ? Date.now() - existingStartTime
             : undefined;
+          const shouldAnnotate = requiresUserApproval && outcome !== undefined;
+          let response = auxiliaryData as ToolCallResponseInfo;
+          if (shouldAnnotate) {
+            const approved = outcome !== ToolConfirmationOutcome.Cancel;
+            response = {
+              ...response,
+              responseParts: this.annotateWithApproval(response.responseParts, {
+                approved,
+                requiresUserApproval,
+                outcome,
+                mode: approvalMode,
+              }),
+            };
+          }
           return {
             request: currentCall.request,
             status: 'error',
             tool: toolInstance,
-            response: auxiliaryData as ToolCallResponseInfo,
+            response,
             durationMs,
             outcome,
+            requiresUserApproval,
           } as ErroredToolCall;
         }
         case 'awaiting_approval':
@@ -493,6 +546,7 @@ export class CoreToolScheduler {
             startTime: existingStartTime,
             outcome,
             invocation,
+            requiresUserApproval,
           } as WaitingToolCall;
         case 'scheduled':
           return {
@@ -502,6 +556,7 @@ export class CoreToolScheduler {
             startTime: existingStartTime,
             outcome,
             invocation,
+            requiresUserApproval,
           } as ScheduledToolCall;
         case 'cancelled': {
           const durationMs = existingStartTime
@@ -523,7 +578,36 @@ export class CoreToolScheduler {
             }
           }
 
-          const errorMessage = `[Operation Cancelled] Reason: ${auxiliaryData}`;
+          const cancellationMetadata = this.normalizeCancellationMetadata(
+            auxiliaryData as CancellationMetadata | undefined,
+            'User cancelled the operation.',
+          );
+          const errorMessage = `[Operation Cancelled] Reason: ${cancellationMetadata.reason}`;
+          const baseResponseParts: Part[] = [
+            {
+              functionResponse: {
+                id: currentCall.request.callId,
+                name: currentCall.request.name,
+                response: {
+                  error: errorMessage,
+                },
+              },
+            },
+          ];
+          const shouldAnnotate = requiresUserApproval && outcome !== undefined;
+          const annotatedParts = shouldAnnotate
+            ? this.annotateWithApproval(baseResponseParts, {
+                approved:
+                  outcome !== undefined &&
+                  outcome !== ToolConfirmationOutcome.Cancel,
+                requiresUserApproval,
+                outcome,
+                mode: cancellationMetadata.mode ?? approvalMode,
+              })
+            : baseResponseParts;
+          if (cancellationMetadata.annotation) {
+            annotatedParts.push({ text: cancellationMetadata.annotation });
+          }
           return {
             request: currentCall.request,
             tool: toolInstance,
@@ -531,17 +615,7 @@ export class CoreToolScheduler {
             status: 'cancelled',
             response: {
               callId: currentCall.request.callId,
-              responseParts: [
-                {
-                  functionResponse: {
-                    id: currentCall.request.callId,
-                    name: currentCall.request.name,
-                    response: {
-                      error: errorMessage,
-                    },
-                  },
-                },
-              ],
+              responseParts: annotatedParts,
               resultDisplay,
               error: undefined,
               errorType: undefined,
@@ -549,6 +623,7 @@ export class CoreToolScheduler {
             },
             durationMs,
             outcome,
+            requiresUserApproval,
           } as CancelledToolCall;
         }
         case 'validating':
@@ -559,6 +634,7 @@ export class CoreToolScheduler {
             startTime: existingStartTime,
             outcome,
             invocation,
+            requiresUserApproval,
           } as ValidatingToolCall;
         case 'executing':
           return {
@@ -568,6 +644,7 @@ export class CoreToolScheduler {
             startTime: existingStartTime,
             outcome,
             invocation,
+            requiresUserApproval,
           } as ExecutingToolCall;
         default: {
           const exhaustiveCheck: never = newStatus;
@@ -712,11 +789,16 @@ export class CoreToolScheduler {
     );
   }
 
-  cancelAll(signal: AbortSignal): void {
+  cancelAll(signal: AbortSignal, metadata?: CancellationMetadata): void {
     if (this.isCancelling) {
       return;
     }
     this.isCancelling = true;
+    const normalizedMetadata = this.normalizeCancellationMetadata(
+      metadata,
+      'User cancelled the operation.',
+    );
+
     // Cancel the currently active tool call, if there is one.
     if (this.toolCalls.length > 0) {
       const activeCall = this.toolCalls[0];
@@ -731,13 +813,13 @@ export class CoreToolScheduler {
           activeCall.request.callId,
           'cancelled',
           signal,
-          'User cancelled the operation.',
+          normalizedMetadata,
         );
       }
     }
 
     // Clear the queue and mark all queued items as cancelled for completion reporting.
-    this._cancelAllQueuedCalls();
+    this._cancelAllQueuedCalls(metadata);
 
     // Finalize the batch immediately.
     void this.checkAndNotifyCompletion(signal);
@@ -823,6 +905,8 @@ export class CoreToolScheduler {
             tool: toolInstance,
             invocation: invocationOrError,
             startTime: Date.now(),
+            requiresUserApproval:
+              this.config.getSessionMode() === SessionMode.BUILD,
           };
         },
       );
@@ -872,7 +956,7 @@ export class CoreToolScheduler {
             reqInfo.callId,
             'cancelled',
             signal,
-            'Tool call cancelled by user.',
+            { reason: 'Tool call cancelled by user.' },
           );
           // The completion check will handle the cascade.
           await this.checkAndNotifyCompletion(signal);
@@ -949,7 +1033,7 @@ export class CoreToolScheduler {
             reqInfo.callId,
             'cancelled',
             signal,
-            'Tool call cancelled by user.',
+            { reason: 'Tool call cancelled by user.' },
           );
           await this.checkAndNotifyCompletion(signal);
         } else {
@@ -987,9 +1071,24 @@ export class CoreToolScheduler {
 
     this.setToolCallOutcome(callId, outcome);
 
-    if (outcome === ToolConfirmationOutcome.Cancel || signal.aborted) {
-      // Instead of just cancelling one tool, trigger the full cancel cascade.
-      this.cancelAll(signal);
+    if (signal.aborted) {
+      this.cancelAll(signal, { reason: 'User cancelled the operation.' });
+      return;
+    }
+
+    if (outcome === ToolConfirmationOutcome.Cancel) {
+      const currentMode = this.config.getSessionMode();
+      const isBuildMode = currentMode === SessionMode.BUILD;
+      if (isBuildMode) {
+        this.config.setSessionMode(SessionMode.PLAN);
+      }
+      this.cancelAll(signal, {
+        reason: 'User rejected tool execution.',
+        annotation: isBuildMode
+          ? 'Tool execution was rejected in Build mode. Session reverted to Plan so the agent can reassess.'
+          : undefined,
+        mode: isBuildMode ? SessionMode.PLAN : undefined,
+      });
       return; // `cancelAll` calls `checkAndNotifyCompletion`, so we can exit here.
     } else if (outcome === ToolConfirmationOutcome.ModifyWithEditor) {
       const waitingToolCall = toolCall as WaitingToolCall;
@@ -1179,7 +1278,7 @@ export class CoreToolScheduler {
                   callId,
                   'cancelled',
                   signal,
-                  'User cancelled tool execution.',
+                  { reason: 'User cancelled tool execution.' },
                 );
               } else if (toolResult.error === undefined) {
                 let content = toolResult.llmContent;
@@ -1261,7 +1360,7 @@ export class CoreToolScheduler {
                   callId,
                   'cancelled',
                   signal,
-                  'User cancelled tool execution.',
+                  { reason: 'User cancelled tool execution.' },
                 );
               } else {
                 this.setStatusInternal(
@@ -1350,7 +1449,7 @@ export class CoreToolScheduler {
     }
   }
 
-  private _cancelAllQueuedCalls(): void {
+  private _cancelAllQueuedCalls(metadata?: CancellationMetadata): void {
     while (this.toolCallQueue.length > 0) {
       const queuedCall = this.toolCallQueue.shift()!;
       // Don't cancel tools that already errored during validation.
@@ -1362,8 +1461,33 @@ export class CoreToolScheduler {
         'startTime' in queuedCall && queuedCall.startTime
           ? Date.now() - queuedCall.startTime
           : undefined;
-      const errorMessage =
-        '[Operation Cancelled] User cancelled the operation.';
+      const normalized = this.normalizeCancellationMetadata(
+        metadata,
+        'User cancelled the operation.',
+      );
+      const errorMessage = `[Operation Cancelled] Reason: ${normalized.reason}`;
+      const responseParts = this.annotateWithApproval(
+        [
+          {
+            functionResponse: {
+              id: queuedCall.request.callId,
+              name: queuedCall.request.name,
+              response: {
+                error: errorMessage,
+              },
+            },
+          },
+        ],
+        {
+          approved: false,
+          requiresUserApproval: queuedCall.requiresUserApproval,
+          outcome: ToolConfirmationOutcome.Cancel,
+          mode: normalized.mode ?? this.config.getSessionMode(),
+        },
+      );
+      if (normalized.annotation) {
+        responseParts.push({ text: normalized.annotation });
+      }
       this.completedToolCallsForBatch.push({
         request: queuedCall.request,
         tool: queuedCall.tool,
@@ -1371,17 +1495,7 @@ export class CoreToolScheduler {
         status: 'cancelled',
         response: {
           callId: queuedCall.request.callId,
-          responseParts: [
-            {
-              functionResponse: {
-                id: queuedCall.request.callId,
-                name: queuedCall.request.name,
-                response: {
-                  error: errorMessage,
-                },
-              },
-            },
-          ],
+          responseParts,
           resultDisplay: undefined,
           error: undefined,
           errorType: undefined,
@@ -1389,8 +1503,65 @@ export class CoreToolScheduler {
         },
         durationMs,
         outcome: ToolConfirmationOutcome.Cancel,
+        requiresUserApproval: queuedCall.requiresUserApproval,
       });
     }
+  }
+
+  private normalizeCancellationMetadata(
+    metadata: CancellationMetadata | undefined,
+    defaultReason: string,
+  ): NormalizedCancellationMetadata {
+    if (!metadata) {
+      return { reason: defaultReason };
+    }
+
+    return {
+      reason: metadata.reason ?? defaultReason,
+      annotation: metadata.annotation,
+      mode: metadata.mode,
+    };
+  }
+
+  private annotateWithApproval(
+    parts: Part[],
+    approval: {
+      approved: boolean;
+      requiresUserApproval?: boolean;
+      outcome?: ToolConfirmationOutcome;
+      mode: SessionMode;
+    },
+  ): Part[] {
+    if (parts.length === 0) {
+      return parts;
+    }
+
+    const [first, ...rest] = parts;
+    if (!first.functionResponse) {
+      return parts;
+    }
+
+    const outcome = approval.outcome ??
+      (approval.approved ? ToolConfirmationOutcome.ProceedOnce : ToolConfirmationOutcome.Cancel);
+
+    const updatedFirst: Part = {
+      ...first,
+      functionResponse: {
+        ...first.functionResponse,
+        response: {
+          ...(first.functionResponse.response ?? {}),
+          approval: {
+            mode: approval.mode,
+            approved: approval.approved,
+            explicit: approval.requiresUserApproval ?? false,
+            outcome,
+            timestamp: new Date().toISOString(),
+          },
+        },
+      },
+    };
+
+    return [updatedFirst, ...rest];
   }
 
   private notifyToolCallsUpdate(): void {

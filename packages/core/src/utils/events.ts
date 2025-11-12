@@ -6,6 +6,7 @@
 
 import { EventEmitter } from 'node:events';
 import type { LoadServerHierarchicalMemoryResponse } from './memoryDiscovery.js';
+import { SessionMode } from '../config/session-mode.js';
 
 /**
  * Defines the severity level for user-facing feedback.
@@ -64,6 +65,7 @@ export enum CoreEvent {
   FallbackModeChanged = 'fallback-mode-changed',
   ModelChanged = 'model-changed',
   MemoryChanged = 'memory-changed',
+  SessionModeChanged = 'session-mode-changed',
 }
 
 export interface CoreEvents {
@@ -71,6 +73,7 @@ export interface CoreEvents {
   [CoreEvent.FallbackModeChanged]: [FallbackModeChangedPayload];
   [CoreEvent.ModelChanged]: [ModelChangedPayload];
   [CoreEvent.MemoryChanged]: [MemoryChangedPayload];
+  [CoreEvent.SessionModeChanged]: [{ mode: SessionMode }];
 }
 
 export class CoreEventEmitter extends EventEmitter<CoreEvents> {
@@ -117,6 +120,10 @@ export class CoreEventEmitter extends EventEmitter<CoreEvents> {
   emitModelChanged(model: string): void {
     const payload: ModelChangedPayload = { model };
     this.emit(CoreEvent.ModelChanged, payload);
+  }
+
+  emitSessionModeChanged(mode: SessionMode): void {
+    this.emit(CoreEvent.SessionModeChanged, { mode });
   }
 
   /**

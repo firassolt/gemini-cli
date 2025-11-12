@@ -19,7 +19,11 @@ import type {
   ModelMetrics,
   ToolCallStats,
 } from '@google/gemini-cli-core';
-import { uiTelemetryService, sessionId } from '@google/gemini-cli-core';
+import {
+  uiTelemetryService,
+  sessionId,
+  SessionMode,
+} from '@google/gemini-cli-core';
 
 export enum ToolCallDecision {
   ACCEPT = 'accept',
@@ -170,6 +174,8 @@ interface SessionStatsContextValue {
   stats: SessionStatsState;
   startNewPrompt: () => void;
   getPromptCount: () => number;
+  mode: SessionMode;
+  setMode: (mode: SessionMode) => void;
 }
 
 // --- Context Definition ---
@@ -180,9 +186,10 @@ const SessionStatsContext = createContext<SessionStatsContextValue | undefined>(
 
 // --- Provider Component ---
 
-export const SessionStatsProvider: React.FC<{ children: React.ReactNode }> = ({
-  children,
-}) => {
+export const SessionStatsProvider: React.FC<{
+  children: React.ReactNode;
+  initialMode?: SessionMode;
+}> = ({ children, initialMode }) => {
   const [stats, setStats] = useState<SessionStatsState>({
     sessionId,
     sessionStartTime: new Date(),
@@ -190,6 +197,9 @@ export const SessionStatsProvider: React.FC<{ children: React.ReactNode }> = ({
     lastPromptTokenCount: 0,
     promptCount: 0,
   });
+  const [mode, setMode] = useState<SessionMode>(
+    initialMode ?? SessionMode.PLAN,
+  );
 
   useEffect(() => {
     const handleUpdate = ({
@@ -243,8 +253,10 @@ export const SessionStatsProvider: React.FC<{ children: React.ReactNode }> = ({
       stats,
       startNewPrompt,
       getPromptCount,
+      mode,
+      setMode,
     }),
-    [stats, startNewPrompt, getPromptCount],
+    [stats, startNewPrompt, getPromptCount, mode],
   );
 
   return (

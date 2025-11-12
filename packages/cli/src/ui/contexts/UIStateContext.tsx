@@ -24,6 +24,7 @@ import type {
   IdeInfo,
   FallbackIntent,
 } from '@google/gemini-cli-core';
+import { SessionMode } from '@google/gemini-cli-core';
 import type { DOMElement } from 'ink';
 import type { SessionStatsState } from '../contexts/SessionContext.js';
 import type { ExtensionUpdateState } from '../state/extensions.js';
@@ -108,6 +109,7 @@ export interface UIState {
   nightly: boolean;
   branchName: string | undefined;
   sessionStats: SessionStatsState;
+  sessionMode: SessionMode;
   terminalWidth: number;
   terminalHeight: number;
   mainControlsRef: React.MutableRefObject<DOMElement | null>;

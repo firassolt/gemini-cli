@@ -89,6 +89,7 @@ import { ExperimentFlags } from '../code_assist/experiments/flagNames.js';
 import { debugLogger } from '../utils/debugLogger.js';
 
 import { ApprovalMode } from '../policy/types.js';
+import { SessionMode, DEFAULT_SESSION_MODE } from './session-mode.js';
 
 export interface AccessibilitySettings {
   disableLoadingPhrases?: boolean;
@@ -306,6 +307,7 @@ export interface ConfigParameters {
   hooks?: {
     [K in HookEventName]?: HookDefinition[];
   };
+  sessionMode?: SessionMode;
 }
 
 export class Config {
@@ -338,6 +340,7 @@ export class Config {
   private geminiMdFileCount: number;
   private geminiMdFilePaths: string[];
   private approvalMode: ApprovalMode;
+  private sessionMode: SessionMode;
   private readonly showMemoryUsage: boolean;
   private readonly accessibility: AccessibilitySettings;
   private readonly telemetrySettings: TelemetrySettings;
@@ -446,6 +449,7 @@ export class Config {
     this.geminiMdFileCount = params.geminiMdFileCount ?? 0;
     this.geminiMdFilePaths = params.geminiMdFilePaths ?? [];
     this.approvalMode = params.approvalMode ?? ApprovalMode.DEFAULT;
+    this.sessionMode = params.sessionMode ?? DEFAULT_SESSION_MODE;
     this.showMemoryUsage = params.showMemoryUsage ?? false;
     this.accessibility = params.accessibility ?? {};
     this.telemetrySettings = {
@@ -914,6 +918,18 @@ export class Config {
 
   getApprovalMode(): ApprovalMode {
     return this.approvalMode;
+  }
+
+  getSessionMode(): SessionMode {
+    return this.sessionMode;
+  }
+
+  setSessionMode(mode: SessionMode): void {
+    if (this.sessionMode === mode) {
+      return;
+    }
+    this.sessionMode = mode;
+    coreEvents.emitSessionModeChanged(mode);
   }
 
   setApprovalMode(mode: ApprovalMode): void {

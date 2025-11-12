@@ -12,6 +12,7 @@ import type {
   ConfirmationRequest,
 } from '../types.js';
 import type { Config, GitService, Logger } from '@google/gemini-cli-core';
+import { SessionMode } from '@google/gemini-cli-core';
 import type { LoadedSettings } from '../../config/settings.js';
 import type { UseHistoryManagerReturn } from '../hooks/useHistoryManager.js';
 import type { SessionStatsState } from '../contexts/SessionContext.js';
@@ -78,6 +79,8 @@ export interface CommandContext {
     stats: SessionStatsState;
     /** A transient list of shell commands the user has approved for this session. */
     sessionShellAllowlist: Set<string>;
+    mode: SessionMode;
+    setMode: (mode: SessionMode) => void;
   };
   // Flag to indicate if an overwrite has been confirmed
   overwriteConfirmed?: boolean;

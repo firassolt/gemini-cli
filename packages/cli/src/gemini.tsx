@@ -202,7 +202,7 @@ export async function startInteractiveUI(
             }
           >
             <ScrollProvider>
-              <SessionStatsProvider>
+              <SessionStatsProvider initialMode={config.getSessionMode()}>
                 <VimModeProvider settings={settings}>
                   <AppContainer
                     config={config}

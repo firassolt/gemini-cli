@@ -29,6 +29,7 @@ import {
   ToolConfirmationOutcome,
   Kind,
   ApprovalMode,
+  SessionMode,
 } from '../index.js';
 import type { Part, PartListUnion } from '@google/genai';
 import {
@@ -225,12 +226,18 @@ function createMockConfig(overrides: Partial<Config> = {}): Config {
     getToolsByServer: () => [],
   } as unknown as ToolRegistry;
 
+  let sessionMode = SessionMode.PLAN;
+
   const baseConfig = {
     getSessionId: () => 'test-session-id',
     getUsageStatisticsEnabled: () => true,
     getDebugMode: () => false,
     getApprovalMode: () => ApprovalMode.DEFAULT,
     setApprovalMode: () => {},
+    getSessionMode: () => sessionMode,
+    setSessionMode: (mode: SessionMode) => {
+      sessionMode = mode;
+    },
     getAllowedTools: () => [],
     getContentGeneratorConfig: () => ({
       model: 'test-model',
@@ -1872,6 +1879,177 @@ describe('CoreToolScheduler Sequential Execution', () => {
     });
 
     modifyWithEditorSpy.mockRestore();
+  });
+
+  it('annotates Build mode approvals on successful execution', async () => {
+    const mockTool = new MockTool({
+      name: 'mockBuildTool',
+      shouldConfirmExecute: MOCK_TOOL_SHOULD_CONFIRM_EXECUTE,
+    });
+    const mockToolRegistry = {
+      getTool: () => mockTool,
+      getToolByName: () => mockTool,
+      getFunctionDeclarations: () => [],
+      tools: new Map(),
+      discovery: {},
+      registerTool: () => {},
+      getToolByDisplayName: () => mockTool,
+      getTools: () => [],
+      discoverTools: async () => {},
+      getAllTools: () => [],
+      getToolsByServer: () => [],
+    } as unknown as ToolRegistry;
+
+    const onAllToolCallsComplete = vi.fn();
+    const onToolCallsUpdate = vi.fn();
+
+    const mockConfig = createMockConfig({
+      getToolRegistry: () => mockToolRegistry,
+    });
+    mockConfig.setSessionMode(SessionMode.BUILD);
+
+    const scheduler = new CoreToolScheduler({
+      config: mockConfig,
+      onAllToolCallsComplete,
+      onToolCallsUpdate,
+      getPreferredEditor: () => 'vscode',
+      onEditorClose: vi.fn(),
+    });
+
+    const abortController = new AbortController();
+    await scheduler.schedule(
+      [
+        {
+          callId: 'build-1',
+          name: 'mockBuildTool',
+          args: {},
+          isClientInitiated: false,
+          prompt_id: 'prompt-build-1',
+        },
+      ],
+      abortController.signal,
+    );
+
+    const waitingCall = (await waitForStatus(
+      onToolCallsUpdate,
+      'awaiting_approval',
+    )) as WaitingToolCall;
+
+    await scheduler.handleConfirmationResponse(
+      waitingCall.request.callId,
+      async () => {},
+      ToolConfirmationOutcome.ProceedOnce,
+      abortController.signal,
+    );
+
+    await vi.waitFor(() => {
+      expect(onAllToolCallsComplete).toHaveBeenCalled();
+    });
+
+    const completedCalls = onAllToolCallsComplete.mock
+      .calls[0][0] as ToolCall[];
+    const completedCall = completedCalls[0];
+
+    expect(completedCall.status).toBe('success');
+    expect(completedCall.requiresUserApproval).toBe(true);
+    const approval =
+      completedCall.response.responseParts[0].functionResponse?.response
+        ?.approval;
+    expect(approval).toBeDefined();
+    expect(approval?.approved).toBe(true);
+    expect(approval?.explicit).toBe(true);
+    expect(approval?.mode).toBe(SessionMode.BUILD);
+    expect(approval?.outcome).toBe(ToolConfirmationOutcome.ProceedOnce);
+  });
+
+  it('reverts to Plan mode and annotates rejection metadata when Build approval is denied', async () => {
+    const mockTool = new MockTool({
+      name: 'mockRejectTool',
+      shouldConfirmExecute: MOCK_TOOL_SHOULD_CONFIRM_EXECUTE,
+    });
+    const mockToolRegistry = {
+      getTool: () => mockTool,
+      getToolByName: () => mockTool,
+      getFunctionDeclarations: () => [],
+      tools: new Map(),
+      discovery: {},
+      registerTool: () => {},
+      getToolByDisplayName: () => mockTool,
+      getTools: () => [],
+      discoverTools: async () => {},
+      getAllTools: () => [],
+      getToolsByServer: () => [],
+    } as unknown as ToolRegistry;
+
+    const onAllToolCallsComplete = vi.fn();
+    const onToolCallsUpdate = vi.fn();
+
+    const mockConfig = createMockConfig({
+      getToolRegistry: () => mockToolRegistry,
+    });
+    mockConfig.setSessionMode(SessionMode.BUILD);
+
+    const scheduler = new CoreToolScheduler({
+      config: mockConfig,
+      onAllToolCallsComplete,
+      onToolCallsUpdate,
+      getPreferredEditor: () => 'vscode',
+      onEditorClose: vi.fn(),
+    });
+
+    const abortController = new AbortController();
+    await scheduler.schedule(
+      [
+        {
+          callId: 'reject-1',
+          name: 'mockRejectTool',
+          args: {},
+          isClientInitiated: false,
+          prompt_id: 'prompt-reject-1',
+        },
+      ],
+      abortController.signal,
+    );
+
+    const waitingCall = (await waitForStatus(
+      onToolCallsUpdate,
+      'awaiting_approval',
+    )) as WaitingToolCall;
+
+    await scheduler.handleConfirmationResponse(
+      waitingCall.request.callId,
+      async () => {},
+      ToolConfirmationOutcome.Cancel,
+      new AbortController().signal,
+    );
+
+    await vi.waitFor(() => {
+      expect(onAllToolCallsComplete).toHaveBeenCalled();
+    });
+
+    expect(mockConfig.getSessionMode()).toBe(SessionMode.PLAN);
+
+    const completedCalls = onAllToolCallsComplete.mock
+      .calls[0][0] as ToolCall[];
+    const cancelledCall = completedCalls[0];
+
+    expect(cancelledCall.status).toBe('cancelled');
+    expect(cancelledCall.requiresUserApproval).toBe(true);
+    expect(cancelledCall.outcome).toBe(ToolConfirmationOutcome.Cancel);
+
+    const approval =
+      cancelledCall.response.responseParts[0].functionResponse?.response
+        ?.approval;
+    expect(approval).toBeDefined();
+    expect(approval?.approved).toBe(false);
+    expect(approval?.explicit).toBe(true);
+    expect(approval?.mode).toBe(SessionMode.PLAN);
+    expect(approval?.outcome).toBe(ToolConfirmationOutcome.Cancel);
+
+    const annotationPart = cancelledCall.response.responseParts[1];
+    expect(annotationPart).toEqual({
+      text: 'Tool execution was rejected in Build mode. Session reverted to Plan so the agent can reassess.',
+    });
   });
 });
 
