@@ -8,3 +8,4 @@ export * from './policy-engine.js';
 export * from './types.js';
 export * from './toml-loader.js';
 export * from './config.js';
+export * from './declarativePolicy.js';

@@ -12,6 +12,7 @@ import type {
   ToolCallConfirmationDetails,
   ToolInvocation,
   ToolResult,
+  ToolLocation,
 } from '../tools/tools.js';
 import {
   BaseDeclarativeTool,
@@ -35,6 +36,7 @@ interface MockToolOptions {
     updateOutput?: (output: string) => void,
   ) => Promise<ToolResult>;
   params?: object;
+  locations?: ToolLocation[];
 }
 
 class MockToolInvocation extends BaseToolInvocation<
@@ -68,6 +70,10 @@ class MockToolInvocation extends BaseToolInvocation<
   getDescription(): string {
     return `A mock tool invocation for ${this.tool.name}`;
   }
+
+  override toolLocations(): ToolLocation[] {
+    return this.tool.locations;
+  }
 }
 
 /**
@@ -86,6 +92,7 @@ export class MockTool extends BaseDeclarativeTool<
     signal?: AbortSignal,
     updateOutput?: (output: string) => void,
   ) => Promise<ToolResult>;
+  locations: ToolLocation[];
 
   constructor(options: MockToolOptions) {
     super(
@@ -113,6 +120,8 @@ export class MockTool extends BaseDeclarativeTool<
           returnDisplay: `Tool ${this.name} executed successfully.`,
         });
     }
+
+    this.locations = options.locations ?? [];
   }
 
   protected createInvocation(params: {

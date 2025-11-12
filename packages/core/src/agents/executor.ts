@@ -53,6 +53,10 @@ import { parseThought } from '../utils/thoughtUtils.js';
 import { type z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { debugLogger } from '../utils/debugLogger.js';
+import {
+  DeclarativeTaskPolicy,
+  loadDeclarativePolicy,
+} from '../policy/declarativePolicy.js';
 
 /** A callback function to report on agent activity. */
 export type ActivityCallback = (activity: SubagentActivityEvent) => void;
@@ -87,6 +91,7 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
   private readonly onActivity?: ActivityCallback;
   private readonly compressionService: ChatCompressionService;
   private hasFailedCompressionAttempt = false;
+  private readonly taskPolicy?: DeclarativeTaskPolicy;
 
   /**
    * Creates and validates a new `AgentExecutor` instance.
@@ -134,6 +139,16 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
       await AgentExecutor.validateTools(agentToolRegistry, definition.name);
     }
 
+    const fileSystem = runtimeContext.getFileSystemService();
+    const taskPolicy = await loadDeclarativePolicy(
+      definition.policyConfig,
+      {
+        projectRoot: runtimeContext.getTargetDir(),
+        readTextFile: (absolutePath: string) =>
+          fileSystem.readTextFile(absolutePath),
+      },
+    );
+
     // Get the parent prompt ID from context
     const parentPromptId = promptIdContext.getStore();
 
@@ -143,6 +158,7 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
       agentToolRegistry,
       parentPromptId,
       onActivity,
+      taskPolicy,
     );
   }
 
@@ -158,12 +174,14 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
     toolRegistry: ToolRegistry,
     parentPromptId: string | undefined,
     onActivity?: ActivityCallback,
+    taskPolicy?: DeclarativeTaskPolicy,
   ) {
     this.definition = definition;
     this.runtimeContext = runtimeContext;
     this.toolRegistry = toolRegistry;
     this.onActivity = onActivity;
     this.compressionService = new ChatCompressionService();
+    this.taskPolicy = taskPolicy;
 
     const randomIdPart = Math.random().toString(36).slice(2, 8);
     // parentPromptId will be undefined if this agent is invoked directly
@@ -663,8 +681,9 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
       inputs,
     );
 
-    // Build system instruction from the templated prompt string.
-    const systemInstruction = promptConfig.systemPrompt
+    const shouldBuildSystemPrompt =
+      Boolean(promptConfig.systemPrompt) || !!this.taskPolicy;
+    const systemInstruction = shouldBuildSystemPrompt
       ? await this.buildSystemPrompt(inputs)
       : undefined;
 
@@ -874,6 +893,7 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
           this.runtimeContext,
           requestInfo,
           signal,
+          { agentPolicy: this.taskPolicy },
         );
 
         if (toolResponse.error) {
@@ -984,30 +1004,30 @@ export class AgentExecutor<TOutput extends z.ZodTypeAny> {
   /** Builds the system prompt from the agent definition and inputs. */
   private async buildSystemPrompt(inputs: AgentInputs): Promise<string> {
     const { promptConfig } = this.definition;
-    if (!promptConfig.systemPrompt) {
-      return '';
+    const sections: string[] = [];
+
+    if (promptConfig.systemPrompt) {
+      sections.push(templateString(promptConfig.systemPrompt, inputs));
     }
 
-    // Inject user inputs into the prompt template.
-    let finalPrompt = templateString(promptConfig.systemPrompt, inputs);
-
-    // Append environment context (CWD and folder structure).
     const dirContext = await getDirectoryContextString(this.runtimeContext);
-    finalPrompt += `\n\n# Environment Context\n${dirContext}`;
+    sections.push(`# Environment Context\n${dirContext}`);
 
-    // Append standard rules for non-interactive execution.
-    finalPrompt += `
-Important Rules:
+    sections.push(
+      `Important Rules:
 * You are running in a non-interactive mode. You CANNOT ask the user for input or clarification.
 * Work systematically using available tools to complete your task.
-* Always use absolute paths for file operations. Construct them using the provided "Environment Context".`;
-
-    finalPrompt += `
+* Always use absolute paths for file operations. Construct them using the provided "Environment Context".
 * When you have completed your task, you MUST call the \`${TASK_COMPLETE_TOOL_NAME}\` tool.
 * Do not call any other tools in the same turn as \`${TASK_COMPLETE_TOOL_NAME}\`.
-* This is the ONLY way to complete your mission. If you stop calling tools without calling this, you have failed.`;
+* This is the ONLY way to complete your mission. If you stop calling tools without calling this, you have failed.`,
+    );
 
-    return finalPrompt;
+    if (this.taskPolicy) {
+      sections.push(`# Declarative Policy\n${this.taskPolicy.describeForPrompt()}`);
+    }
+
+    return sections.join('\n\n');
   }
 
   /**
