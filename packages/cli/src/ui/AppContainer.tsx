@@ -52,6 +52,7 @@ import {
   refreshServerHierarchicalMemory,
   type ModelChangedPayload,
   type MemoryChangedPayload,
+  SessionMode,
 } from '@google/gemini-cli-core';
 import { validateAuthMethod } from '../config/auth.js';
 import process from 'node:process';
@@ -234,7 +235,27 @@ export const AppContainer = (props: AppContainerProps) => {
   const { stdout } = useStdout();
 
   // Additional hooks moved from App.tsx
-  const { stats: sessionStats } = useSessionStats();
+  const {
+    stats: sessionStats,
+    mode: sessionMode,
+    setMode: setSessionMode,
+  } = useSessionStats();
+
+  useEffect(() => {
+    if (config.getSessionMode() !== sessionMode) {
+      config.setSessionMode(sessionMode);
+    }
+  }, [config, sessionMode]);
+
+  useEffect(() => {
+    const handleSessionModeChanged = ({ mode }: { mode: SessionMode }) => {
+      setSessionMode(mode);
+    };
+    coreEvents.on(CoreEvent.SessionModeChanged, handleSessionModeChanged);
+    return () => {
+      coreEvents.off(CoreEvent.SessionModeChanged, handleSessionModeChanged);
+    };
+  }, [setSessionMode]);
   const branchName = useGitBranchName(config.getTargetDir());
 
   // Layout measurements
@@ -1328,6 +1349,7 @@ Logging in with Google... Please restart Gemini CLI to continue.
       nightly,
       branchName,
       sessionStats,
+      sessionMode,
       terminalWidth,
       terminalHeight,
       mainControlsRef,
@@ -1371,6 +1393,7 @@ Logging in with Google... Please restart Gemini CLI to continue.
       initError,
       pendingGeminiHistoryItems,
       thought,
+      sessionMode,
       shellModeActive,
       userMessages,
       buffer,

@@ -10,7 +10,7 @@ import type {
   ToolResult,
   ToolInvocation,
 } from './tools.js';
-import { Kind, BaseDeclarativeTool, BaseToolInvocation } from './tools.js';
+import { Kind, MUTATOR_KINDS, BaseDeclarativeTool, BaseToolInvocation } from './tools.js';
 import type { Config } from '../config/config.js';
 import { spawn } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
@@ -21,8 +21,11 @@ import { safeJsonStringify } from '../utils/safeJsonStringify.js';
 import type { MessageBus } from '../confirmation-bus/message-bus.js';
 import { debugLogger } from '../utils/debugLogger.js';
 import { coreEvents } from '../utils/events.js';
+import { SessionMode } from '../config/session-mode.js';
 
 export const DISCOVERED_TOOL_PREFIX = 'discovered_tool_';
+
+const PLAN_MODE_OTHER_TOOL_ALLOWLIST = new Set<string>();
 
 type ToolParams = Record<string, unknown>;
 
@@ -446,6 +449,12 @@ export class ToolRegistry {
     excludeTools?: Set<string>,
   ): boolean {
     excludeTools ??= this.config.getExcludeTools() ?? new Set([]);
+    if (
+      this.config.getSessionMode() === SessionMode.PLAN &&
+      this.isToolRestrictedInPlan(tool)
+    ) {
+      return false;
+    }
     const normalizedClassName = tool.constructor.name.replace(/^_+/, '');
     const possibleNames = [tool.name, normalizedClassName];
     if (tool instanceof DiscoveredMCPTool) {
@@ -459,6 +468,18 @@ export class ToolRegistry {
       }
     }
     return !possibleNames.some((name) => excludeTools.has(name));
+  }
+
+  private isToolRestrictedInPlan(tool: AnyDeclarativeTool): boolean {
+    if (MUTATOR_KINDS.includes(tool.kind)) {
+      return true;
+    }
+
+    if (tool.kind === Kind.Other) {
+      return !PLAN_MODE_OTHER_TOOL_ALLOWLIST.has(tool.name);
+    }
+
+    return false;
   }
 
   /**

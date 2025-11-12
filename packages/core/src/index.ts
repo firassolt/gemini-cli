@@ -7,6 +7,7 @@
 // Export config
 export * from './config/config.js';
 export * from './config/defaultModelConfigs.js';
+export { SessionMode } from './config/session-mode.js';
 export * from './output/types.js';
 export * from './output/json-formatter.js';
 export * from './output/stream-json-formatter.js';

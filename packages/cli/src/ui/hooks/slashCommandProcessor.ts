@@ -215,6 +215,8 @@ export const useSlashCommandProcessor = (
       session: {
         stats: session.stats,
         sessionShellAllowlist,
+        mode: session.mode,
+        setMode: session.setMode,
       },
     }),
     [
@@ -227,6 +229,8 @@ export const useSlashCommandProcessor = (
       clearItems,
       refreshStatic,
       session.stats,
+      session.mode,
+      session.setMode,
       actions,
       pendingItem,
       setPendingItem,

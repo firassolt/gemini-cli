@@ -30,6 +30,7 @@ import {
   EDIT_TOOL_NAME,
   debugLogger,
   loadServerHierarchicalMemory,
+  SessionMode,
 } from '@google/gemini-cli-core';
 import type { Settings } from './settings.js';
 
@@ -615,6 +616,7 @@ export async function loadCliConfig(
       process.env['https_proxy'] ||
       process.env['HTTP_PROXY'] ||
       process.env['http_proxy'],
+    sessionMode: SessionMode.PLAN,
     cwd,
     fileDiscoveryService: fileService,
     bugCommand: settings.advanced?.bugCommand,

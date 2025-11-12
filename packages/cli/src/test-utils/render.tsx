@@ -20,7 +20,7 @@ import { VimModeProvider } from '../ui/contexts/VimModeContext.js';
 import { MouseProvider } from '../ui/contexts/MouseContext.js';
 import { ScrollProvider } from '../ui/contexts/ScrollProvider.js';
 
-import { type Config } from '@google/gemini-cli-core';
+import { type Config, SessionMode } from '@google/gemini-cli-core';
 
 // Wrapper around ink-testing-library's render that ensures act() is called
 export const render = (
@@ -111,6 +111,7 @@ const baseMockUiState = {
   mainAreaWidth: 100,
   terminalWidth: 120,
   currentModel: 'gemini-pro',
+  sessionMode: SessionMode.PLAN,
 };
 
 export const renderWithProviders = (
