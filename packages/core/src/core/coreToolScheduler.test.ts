@@ -38,6 +38,7 @@ import {
   MOCK_TOOL_SHOULD_CONFIRM_EXECUTE,
 } from '../test-utils/mock-tool.js';
 import * as modifiableToolModule from '../tools/modifiable-tool.js';
+import { coreEvents } from '../utils/events.js';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { isShellInvocationAllowlisted } from '../utils/shell-utils.js';
@@ -1962,7 +1963,7 @@ describe('CoreToolScheduler Sequential Execution', () => {
     expect(approval?.outcome).toBe(ToolConfirmationOutcome.ProceedOnce);
   });
 
-  it('reverts to Plan mode and annotates rejection metadata when Build approval is denied', async () => {
+  it('reverts to Plan mode, records refusal context, and annotates rejection metadata when Build approval is denied', async () => {
     const mockTool = new MockTool({
       name: 'mockRejectTool',
       shouldConfirmExecute: MOCK_TOOL_SHOULD_CONFIRM_EXECUTE,
@@ -1984,8 +1985,18 @@ describe('CoreToolScheduler Sequential Execution', () => {
     const onAllToolCallsComplete = vi.fn();
     const onToolCallsUpdate = vi.fn();
 
+    const addHistory = vi.fn();
+    const recordMessage = vi.fn();
+    const mockGeminiClient = {
+      getChat: () => ({ addHistory }),
+      getChatRecordingService: () => ({ recordMessage }),
+    } as unknown as ReturnType<Config['getGeminiClient']>;
+
+    const emitFeedbackSpy = vi.spyOn(coreEvents, 'emitFeedback');
+
     const mockConfig = createMockConfig({
       getToolRegistry: () => mockToolRegistry,
+      getGeminiClient: () => mockGeminiClient,
     });
     mockConfig.setSessionMode(SessionMode.BUILD);
 
@@ -1997,59 +2008,85 @@ describe('CoreToolScheduler Sequential Execution', () => {
       onEditorClose: vi.fn(),
     });
 
-    const abortController = new AbortController();
-    await scheduler.schedule(
-      [
-        {
-          callId: 'reject-1',
-          name: 'mockRejectTool',
-          args: {},
-          isClientInitiated: false,
-          prompt_id: 'prompt-reject-1',
-        },
-      ],
-      abortController.signal,
-    );
+    try {
+      const abortController = new AbortController();
+      await scheduler.schedule(
+        [
+          {
+            callId: 'reject-1',
+            name: 'mockRejectTool',
+            args: {},
+            isClientInitiated: false,
+            prompt_id: 'prompt-reject-1',
+          },
+        ],
+        abortController.signal,
+      );
 
-    const waitingCall = (await waitForStatus(
-      onToolCallsUpdate,
-      'awaiting_approval',
-    )) as WaitingToolCall;
+      const waitingCall = (await waitForStatus(
+        onToolCallsUpdate,
+        'awaiting_approval',
+      )) as WaitingToolCall;
 
-    await scheduler.handleConfirmationResponse(
-      waitingCall.request.callId,
-      async () => {},
-      ToolConfirmationOutcome.Cancel,
-      new AbortController().signal,
-    );
+      await scheduler.handleConfirmationResponse(
+        waitingCall.request.callId,
+        async () => {},
+        ToolConfirmationOutcome.Cancel,
+        new AbortController().signal,
+      );
 
-    await vi.waitFor(() => {
-      expect(onAllToolCallsComplete).toHaveBeenCalled();
-    });
+      await vi.waitFor(() => {
+        expect(onAllToolCallsComplete).toHaveBeenCalled();
+      });
 
-    expect(mockConfig.getSessionMode()).toBe(SessionMode.PLAN);
+      expect(mockConfig.getSessionMode()).toBe(SessionMode.PLAN);
 
-    const completedCalls = onAllToolCallsComplete.mock
-      .calls[0][0] as ToolCall[];
-    const cancelledCall = completedCalls[0];
+      const completedCalls = onAllToolCallsComplete.mock
+        .calls[0][0] as ToolCall[];
+      const cancelledCall = completedCalls[0];
 
-    expect(cancelledCall.status).toBe('cancelled');
-    expect(cancelledCall.requiresUserApproval).toBe(true);
-    expect(cancelledCall.outcome).toBe(ToolConfirmationOutcome.Cancel);
+      expect(cancelledCall.status).toBe('cancelled');
+      expect(cancelledCall.requiresUserApproval).toBe(true);
+      expect(cancelledCall.outcome).toBe(ToolConfirmationOutcome.Cancel);
 
-    const approval =
-      cancelledCall.response.responseParts[0].functionResponse?.response
-        ?.approval;
-    expect(approval).toBeDefined();
-    expect(approval?.approved).toBe(false);
-    expect(approval?.explicit).toBe(true);
-    expect(approval?.mode).toBe(SessionMode.PLAN);
-    expect(approval?.outcome).toBe(ToolConfirmationOutcome.Cancel);
+      const approval =
+        cancelledCall.response.responseParts[0].functionResponse?.response
+          ?.approval;
+      expect(approval).toBeDefined();
+      expect(approval?.approved).toBe(false);
+      expect(approval?.explicit).toBe(true);
+      expect(approval?.mode).toBe(SessionMode.PLAN);
+      expect(approval?.outcome).toBe(ToolConfirmationOutcome.Cancel);
 
-    const annotationPart = cancelledCall.response.responseParts[1];
-    expect(annotationPart).toEqual({
-      text: 'Tool execution was rejected in Build mode. Session reverted to Plan so the agent can reassess.',
-    });
+      const annotationPart = cancelledCall.response.responseParts[1];
+      expect(annotationPart).toEqual({
+        text: expect.stringContaining('re-run verification tools'),
+      });
+      expect(annotationPart.text).toContain('Session reverted to Plan mode');
+      expect(annotationPart.text).toContain('User rejected running the command "mockTool"');
+
+      expect(emitFeedbackSpy).toHaveBeenCalledWith(
+        'info',
+        expect.stringContaining('re-run verification tools'),
+      );
+
+      expect(addHistory).toHaveBeenCalledWith({
+        role: 'user',
+        parts: [
+          {
+            text: expect.stringContaining('re-run verification tools'),
+          },
+        ],
+      });
+
+      expect(recordMessage).toHaveBeenCalledWith({
+        model: undefined,
+        type: 'user',
+        content: expect.stringContaining('re-run verification tools'),
+      });
+    } finally {
+      emitFeedbackSpy.mockRestore();
+    }
   });
 });
 
