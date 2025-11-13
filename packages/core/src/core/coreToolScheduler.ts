@@ -51,6 +51,8 @@ import type { ToolConfirmationRequest } from '../confirmation-bus/types.js';
 import { MessageBusType } from '../confirmation-bus/types.js';
 import type { MessageBus } from '../confirmation-bus/message-bus.js';
 import { SessionMode } from '../config/session-mode.js';
+import { coreEvents } from '../utils/events.js';
+import { debugLogger } from '../utils/debugLogger.js';
 
 export type ValidatingToolCall = {
   status: 'validating';
@@ -169,6 +171,24 @@ interface NormalizedCancellationMetadata {
   annotation?: string;
   mode?: SessionMode;
 }
+
+interface ToolRefusalContext {
+  summary: string;
+  detail?: string;
+}
+
+type GeminiClientLike = {
+  getChat?: () => {
+    addHistory?: (content: { role: string; parts: Array<{ text: string }> }) => void;
+  };
+  getChatRecordingService?: () => {
+    recordMessage?: (message: {
+      model: string | undefined;
+      type: string;
+      content: PartListUnion;
+    }) => void;
+  };
+};
 
 /**
  * Formats tool output for a Gemini FunctionResponse.
@@ -1064,8 +1084,12 @@ export class CoreToolScheduler {
     const toolCall = this.toolCalls.find(
       (c) => c.request.callId === callId && c.status === 'awaiting_approval',
     );
+    const waitingToolCall =
+      toolCall && toolCall.status === 'awaiting_approval'
+        ? (toolCall as WaitingToolCall)
+        : undefined;
 
-    if (toolCall && toolCall.status === 'awaiting_approval') {
+    if (waitingToolCall) {
       await originalOnConfirm(outcome);
     }
 
@@ -1079,45 +1103,51 @@ export class CoreToolScheduler {
     if (outcome === ToolConfirmationOutcome.Cancel) {
       const currentMode = this.config.getSessionMode();
       const isBuildMode = currentMode === SessionMode.BUILD;
+      const annotationMessage = this.handleToolRefusal(
+        waitingToolCall,
+        isBuildMode,
+      );
       if (isBuildMode) {
         this.config.setSessionMode(SessionMode.PLAN);
       }
       this.cancelAll(signal, {
         reason: 'User rejected tool execution.',
-        annotation: isBuildMode
-          ? 'Tool execution was rejected in Build mode. Session reverted to Plan so the agent can reassess.'
-          : undefined,
+        annotation:
+          annotationMessage ??
+          (isBuildMode
+            ? 'Tool execution was rejected in Build mode. Session reverted to Plan so the agent can reassess.'
+            : undefined),
         mode: isBuildMode ? SessionMode.PLAN : undefined,
       });
       return; // `cancelAll` calls `checkAndNotifyCompletion`, so we can exit here.
     } else if (outcome === ToolConfirmationOutcome.ModifyWithEditor) {
-      const waitingToolCall = toolCall as WaitingToolCall;
-      if (isModifiableDeclarativeTool(waitingToolCall.tool)) {
-        const modifyContext = waitingToolCall.tool.getModifyContext(signal);
+      const awaitingCall = waitingToolCall;
+      if (awaitingCall && isModifiableDeclarativeTool(awaitingCall.tool)) {
+        const modifyContext = awaitingCall.tool.getModifyContext(signal);
         const editorType = this.getPreferredEditor();
         if (!editorType) {
           return;
         }
 
         this.setStatusInternal(callId, 'awaiting_approval', signal, {
-          ...waitingToolCall.confirmationDetails,
+          ...awaitingCall.confirmationDetails,
           isModifying: true,
         } as ToolCallConfirmationDetails);
 
         const contentOverrides =
-          waitingToolCall.confirmationDetails.type === 'edit'
+          awaitingCall.confirmationDetails.type === 'edit'
             ? {
                 currentContent:
-                  waitingToolCall.confirmationDetails.originalContent,
-                proposedContent: waitingToolCall.confirmationDetails.newContent,
+                  awaitingCall.confirmationDetails.originalContent,
+                proposedContent: awaitingCall.confirmationDetails.newContent,
               }
             : undefined;
 
         const { updatedParams, updatedDiff } = await modifyWithEditor<
-          typeof waitingToolCall.request.args
+          typeof awaitingCall.request.args
         >(
-          waitingToolCall.request.args,
-          modifyContext as ModifyContext<typeof waitingToolCall.request.args>,
+          awaitingCall.request.args,
+          modifyContext as ModifyContext<typeof awaitingCall.request.args>,
           editorType,
           signal,
           this.onEditorClose,
@@ -1125,7 +1155,7 @@ export class CoreToolScheduler {
         );
         this.setArgsInternal(callId, updatedParams);
         this.setStatusInternal(callId, 'awaiting_approval', signal, {
-          ...waitingToolCall.confirmationDetails,
+          ...awaitingCall.confirmationDetails,
           fileDiff: updatedDiff,
           isModifying: false,
         } as ToolCallConfirmationDetails);
@@ -1505,6 +1535,139 @@ export class CoreToolScheduler {
         outcome: ToolConfirmationOutcome.Cancel,
         requiresUserApproval: queuedCall.requiresUserApproval,
       });
+    }
+  }
+
+  private handleToolRefusal(
+    waitingCall: WaitingToolCall | undefined,
+    isBuildMode: boolean,
+  ): string {
+    const context = waitingCall ? this.describeRefusedAction(waitingCall) : undefined;
+
+    const messageParts: string[] = [];
+    if (context) {
+      messageParts.push(`User rejected ${context.summary}.`);
+      if (context.detail) {
+        messageParts.push(`Context: ${context.detail}.`);
+      }
+    } else {
+      messageParts.push('User rejected the pending tool execution.');
+    }
+    messageParts.push(
+      isBuildMode
+        ? 'Session reverted to Plan mode so the agent can reassess.'
+        : 'The agent will continue in Plan mode to reassess.',
+    );
+    messageParts.push(
+      'While in Plan mode, re-run verification tools (e.g., file diffs, tests) and produce a new proposal that addresses the rejection reasons.',
+    );
+
+    const message = messageParts.join(' ');
+
+    debugLogger.log('Tool execution refused.', {
+      callId: waitingCall?.request.callId,
+      tool: waitingCall?.request.name,
+      summary: context?.summary,
+      detail: context?.detail,
+    });
+
+    coreEvents.emitFeedback('info', message);
+    this.persistRefusalRationale(message);
+
+    return message;
+  }
+
+  private describeRefusedAction(call: WaitingToolCall): ToolRefusalContext {
+    const toolDisplayName = call.tool?.displayName ?? call.request.name;
+    const details = call.confirmationDetails;
+
+    switch (details.type) {
+      case 'edit': {
+        const location = details.filePath || details.fileName || toolDisplayName;
+        return {
+          summary: `the proposed edit to ${location}`,
+          detail: this.sanitizeRefusalDetail(details.title),
+        };
+      }
+      case 'exec':
+        return {
+          summary: `running the command "${details.command}"`,
+          detail: this.sanitizeRefusalDetail(details.title),
+        };
+      case 'mcp':
+        return {
+          summary: `invoking ${details.toolDisplayName} from the ${details.serverName} server`,
+          detail: this.sanitizeRefusalDetail(details.title),
+        };
+      case 'info':
+        return {
+          summary: `the information request "${details.prompt}"`,
+          detail: this.sanitizeRefusalDetail(details.title),
+        };
+      default:
+        return {
+          summary: `the ${toolDisplayName} tool call`,
+        };
+    }
+  }
+
+  private sanitizeRefusalDetail(detail?: string): string | undefined {
+    if (!detail) {
+      return undefined;
+    }
+
+    let normalized = detail.replace(/\s+/g, ' ').trim();
+    if (!normalized) {
+      return undefined;
+    }
+
+    if (normalized.endsWith('.')) {
+      normalized = normalized.slice(0, -1).trim();
+    }
+
+    const MAX_LENGTH = 200;
+    if (normalized.length > MAX_LENGTH) {
+      normalized = `${normalized.slice(0, MAX_LENGTH - 3)}...`;
+    }
+
+    return normalized;
+  }
+
+  private persistRefusalRationale(message: string): void {
+    if (!message) {
+      return;
+    }
+
+    try {
+      const configWithClient = this.config as {
+        getGeminiClient?: () => GeminiClientLike | null | undefined;
+      };
+      const geminiClient = configWithClient.getGeminiClient?.();
+      if (!geminiClient) {
+        return;
+      }
+
+      const chat = geminiClient.getChat?.();
+      if (chat && typeof chat.addHistory === 'function') {
+        chat.addHistory({
+          role: 'user',
+          parts: [{ text: message }],
+        });
+      }
+
+      const chatRecordingService = geminiClient.getChatRecordingService?.();
+      if (
+        chatRecordingService &&
+        typeof chatRecordingService.recordMessage === 'function'
+      ) {
+        chatRecordingService.recordMessage({
+          model: undefined,
+          type: 'user',
+          content: message,
+        });
+      }
+    } catch (error) {
+      debugLogger.warn('Failed to persist refusal rationale in chat history.', error);
     }
   }
 
