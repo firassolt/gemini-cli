@@ -53,6 +53,27 @@ npm install -g @google/gemini-cli
 brew install gemini-cli
 ```
 
+### Enable Planner/Builder session modes
+
+After installing, launch Gemini CLI in **Planner** mode to explore a project
+without making changes:
+
+```bash
+gemini --mode plan
+```
+
+When you are ready to apply edits, switch to **Builder** mode. Builder sessions
+prompt for every modification before it is executed, and any declined change
+returns the agent to Planner mode so it can reconsider and fact-check:
+
+```bash
+gemini --mode build
+```
+
+You can also toggle modes inside an active session with the `:plan` and `:build`
+commands from the command palette (press <kbd>Ctrl</kbd> + <kbd>Shift</kbd> +
+<kbd>P</kbd>).
+
 ## Release Cadence and Tags
 
 See [Releases](./docs/releases.md) for more details.
