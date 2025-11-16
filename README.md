@@ -53,6 +53,30 @@ npm install -g @google/gemini-cli
 brew install gemini-cli
 ```
 
+### Download and install locally from source
+
+Want to run the CLI directly from a local checkout? Download (or clone) the
+repository, install dependencies, and link the binary onto your PATH:
+
+```bash
+# 1. Download the source (clone or grab the ZIP from GitHub Releases)
+git clone https://github.com/google-gemini/gemini-cli.git
+cd gemini-cli
+
+# 2. Install dependencies and build the bundled binary
+npm install
+npm run build
+
+# 3. (Optional) Link the "gemini" command locally for easy use
+npm link
+
+# 4. Launch Gemini CLI in your desired mode
+gemini --mode plan
+```
+
+If you prefer not to link globally, you can invoke the bundled binary directly
+via `node bundle/gemini.js --mode build` from the repository root.
+
 ### Enable Planner/Builder session modes
 
 After installing, launch Gemini CLI in **Planner** mode to explore a project
