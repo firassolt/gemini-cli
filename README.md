@@ -53,6 +53,76 @@ npm install -g @google/gemini-cli
 brew install gemini-cli
 ```
 
+### Download and install locally from source
+
+You can run Gemini CLI straight from a local checkout without waiting for a
+published npm package. Pick the workflow that fits your environment:
+
+#### Option A: Clone the Git repository (recommended)
+
+```bash
+git clone https://github.com/google-gemini/gemini-cli.git
+cd gemini-cli
+```
+
+Cloning preserves the `.git` metadata, which keeps the build scripts from
+emitting fatal-looking "not a git repository" warnings when they try to record
+the current commit.
+
+#### Option B: Download a source archive
+
+```bash
+curl -L https://github.com/google-gemini/gemini-cli/archive/refs/heads/main.tar.gz \
+  | tar -xz
+cd gemini-cli-main
+```
+
+Archive downloads do not include the `.git` directory, so the `npm install` and
+`npm run build` steps below may print `fatal: not a git repository`. That output
+is safe to ignore—the build continues normally because the scripts fall back to
+"N/A" commit metadata.
+
+#### Build and link the CLI locally
+
+```bash
+# Install workspace dependencies
+npm install
+
+# Produce the bundled binary
+npm run build
+
+# (Optional) Link the "gemini" command onto your PATH
+npm link
+
+# Launch in Planner mode
+gemini --mode plan
+```
+
+If you prefer not to `npm link`, you can invoke the bundle directly with
+`node bundle/gemini.js --mode build` from the repository root or run
+`npm run start -- --mode build` for the same effect.
+
+### Enable Planner/Builder session modes
+
+After installing, launch Gemini CLI in **Planner** mode to explore a project
+without making changes:
+
+```bash
+gemini --mode plan
+```
+
+When you are ready to apply edits, switch to **Builder** mode. Builder sessions
+prompt for every modification before it is executed, and any declined change
+returns the agent to Planner mode so it can reconsider and fact-check:
+
+```bash
+gemini --mode build
+```
+
+You can also toggle modes inside an active session with the `:plan` and `:build`
+commands from the command palette (press <kbd>Ctrl</kbd> + <kbd>Shift</kbd> +
+<kbd>P</kbd>).
+
 ## Release Cadence and Tags
 
 See [Releases](./docs/releases.md) for more details.
